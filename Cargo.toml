@@ -1,0 +1,23 @@
+[package]
+name = "hull"
+version = "0.1.0"
+edition = "2024"
+description = "Simple and lean ovs network mangement"
+authors = ["Henry Barreto <me@henrybarreto.dev>"]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4" }
+libc = "0.2"
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+ipnetwork = "0.20.0"
+rand = "0.8.5"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
