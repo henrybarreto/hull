@@ -6,6 +6,8 @@ Hull is simple and lean ovs network mangement.
 
 - rust
 - ovs-vsctl, ovs-ofctl
+- ip
+- ping
 
 ## Installation
 

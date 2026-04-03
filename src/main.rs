@@ -240,7 +240,7 @@ async fn run(matches: &clap::ArgMatches) -> Result<()> {
                 Some(("rm", m)) => {
                     let switch = m.get_one::<String>("switch").unwrap();
                     let name = m.get_one::<String>("name").unwrap();
-                    switch_ops.remove_switch_port(name, switch)?;
+                    switch_ops.remove_switch_port(switch, name)?;
                     output(&SuccessResponse::with_data(
                         "Removed port",
                         serde_json::json!({ "name": name }),

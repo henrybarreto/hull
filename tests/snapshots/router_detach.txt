@@ -1,0 +1,8 @@
+NXST_FLOW reply (xid=0x4):
+cookie=<COOKIE>, duration=<DURATION>, table=0, n_packets=<N_PACKETS>, n_bytes=<N_BYTES>, idle_age=<IDLE_AGE>, priority=280, arp=, arp_tpa=10.0.0.1, arp_op=1, actions=move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[], mod_dl_src:02:3d:a2:db:7e:35=, load:0x2->NXM_OF_ARP_OP[]=, move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[]=, load:0x23da2db7e35->NXM_NX_ARP_SHA[]=, move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[]=, load:0xa000001->NXM_OF_ARP_SPA[]=, IN_PORT=
+cookie=<COOKIE>, duration=<DURATION>, table=0, n_packets=<N_PACKETS>, n_bytes=<N_BYTES>, idle_age=<IDLE_AGE>, priority=280, icmp=, nw_dst=10.0.0.1, icmp_type=8, actions=move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[], mod_dl_src:02:3d:a2:db:7e:35=, move:NXM_OF_IP_SRC[]->NXM_OF_IP_DST[]=, mod_nw_src:10.0.0.1=, load:0->NXM_OF_ICMP_TYPE[]=, IN_PORT=
+cookie=<COOKIE>, duration=<DURATION>, table=0, n_packets=<N_PACKETS>, n_bytes=<N_BYTES>, idle_age=<IDLE_AGE>, priority=239, arp=, dl_dst=<MAC>, arp_spa=10.0.0.0/24, arp_tpa=10.0.0.0/24, actions=drop
+cookie=<COOKIE>, duration=<DURATION>, table=0, n_packets=<N_PACKETS>, n_bytes=<N_BYTES>, idle_age=<IDLE_AGE>, priority=239, arp=, dl_dst=<MAC>, arp_spa=10.1.0.0/24, arp_tpa=10.1.0.0/24, actions=drop
+cookie=<COOKIE>, duration=<DURATION>, table=0, n_packets=<N_PACKETS>, n_bytes=<N_BYTES>, idle_age=<IDLE_AGE>, priority=235, ip=, nw_src=10.0.0.0/24, nw_dst=10.0.0.0/24, actions=drop
+cookie=<COOKIE>, duration=<DURATION>, table=0, n_packets=<N_PACKETS>, n_bytes=<N_BYTES>, idle_age=<IDLE_AGE>, priority=235, ip=, nw_src=10.1.0.0/24, nw_dst=10.1.0.0/24, actions=drop
+cookie=<COOKIE>, duration=<DURATION>, table=0, n_packets=<N_PACKETS>, n_bytes=<N_BYTES>, idle_age=<IDLE_AGE>, priority=0, actions=NORMAL
