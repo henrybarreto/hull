@@ -2,7 +2,7 @@
 name = "hull"
 version = "0.1.0"
 edition = "2024"
-description = "Simple and lean ovs network mangement"
+description = "A simple utility tool that simplifies creating and managing virtual networks using Open vSwitch"
 authors = ["Henry Barreto <me@henrybarreto.dev>"]
 
 [dependencies]

@@ -1,6 +1,6 @@
 # Hull
 
-Hull is simple and lean ovs network mangement.
+Hull is a simple utility tool that simplifies creating and managing virtual networks using Open vSwitch.
 
 ## Requirements
 
