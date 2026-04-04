@@ -190,6 +190,13 @@ impl RouterOps {
 
         let router = self.db.get_router(router_name)?;
 
+        let _ = ovs_vsctl(&[
+            "--if-exists",
+            "del-port",
+            &self.config.bridge_name,
+            &router.link_name.as_ref().unwrap(),
+        ]);
+
         self.db.update_router_link(&router.name, None, None, None)?;
 
         // TODO: We should avoid delete and replay the whole router flows here, but it's simpler
