@@ -291,9 +291,12 @@ hull router attach rt0 sw0
 
 # Set uplink to a physical interface with external connectivity
 hull router link set rt0 eth0 192.168.1.100 52:54:00:ab:cd:ef
+
+# Add a route for outbound traffic: source subnet, destination, next hop
+hull router route add rt0 10.0.0.0/24 0.0.0.0/0 192.168.1.1
 ```
 
-Replace `eth0`, `192.168.1.100`, and the MAC with your actual uplink interface details. The MAC must match the uplink interface's hardware address.
+Replace `eth0`, `192.168.1.100`, and the MAC with your actual uplink interface details. The MAC must match the uplink interface's hardware address. The route's next hop (`192.168.1.1` in this example) must be reachable on the uplink's network -- it's typically your LAN's default gateway.
 
 ### Step 2 - Get the MAC address
 

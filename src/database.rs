@@ -42,6 +42,16 @@ pub struct RouterPort {
     pub switch_name: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RouterRoute {
+    pub uuid: String,
+    pub router_uuid: String,
+    pub source: String,
+    pub destination: String,
+    pub next_hop: Option<String>,
+    pub metric: u32,
+}
+
 pub struct Database {
     pub db_path: PathBuf,
 }
@@ -101,6 +111,17 @@ fn router_port_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RouterPort>
         uuid: row.get(0)?,
         router_name: row.get(1)?,
         switch_name: row.get(2)?,
+    })
+}
+
+fn router_route_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RouterRoute> {
+    Ok(RouterRoute {
+        uuid: row.get(0)?,
+        router_uuid: row.get(1)?,
+        source: row.get(2)?,
+        destination: row.get(3)?,
+        next_hop: row.get(4)?,
+        metric: row.get(5)?,
     })
 }
 
@@ -169,6 +190,19 @@ impl Database {
                 router_uuid TEXT NOT NULL REFERENCES routers(uuid)  ON DELETE CASCADE,
                 switch_uuid TEXT NOT NULL REFERENCES switches(uuid) ON DELETE CASCADE,
                 UNIQUE (router_uuid, switch_uuid)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS router_routes (
+                uuid        TEXT PRIMARY KEY,
+                router_uuid TEXT NOT NULL REFERENCES routers(uuid) ON DELETE CASCADE,
+                source      TEXT NOT NULL,
+                destination TEXT NOT NULL,
+                next_hop    TEXT,
+                metric      INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(router_uuid, source, destination)
             )",
             [],
         )?;
@@ -433,6 +467,54 @@ impl Database {
     pub fn remove_switch_port(&self, name: &str) -> Result<()> {
         let conn = self.open()?;
         conn.execute("DELETE FROM switch_ports WHERE name = ?1", params![name])?;
+        Ok(())
+    }
+
+    pub fn create_route(
+        &self,
+        router_uuid: &str,
+        source: &str,
+        destination: &str,
+        next_hop: Option<&str>,
+        metric: u32,
+    ) -> Result<RouterRoute> {
+        let uuid = uuid::Uuid::new_v4().to_string();
+        let conn = self.open()?;
+        conn.execute(
+            "INSERT INTO router_routes (uuid, router_uuid, source, destination, next_hop, metric)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![uuid, router_uuid, source, destination, next_hop, metric],
+        )?;
+
+        let mut stmt = conn.prepare(
+            "SELECT uuid, router_uuid, source, destination, next_hop, metric
+             FROM router_routes
+             WHERE uuid = ?1",
+        )?;
+        stmt.query_row(params![uuid], router_route_from_row)
+            .map_err(|e| anyhow!("route not found: {}", e))
+    }
+
+    pub fn list_routes_for_router(&self, router_uuid: &str) -> Result<Vec<RouterRoute>> {
+        let conn = self.open()?;
+        let mut stmt = conn.prepare(
+            "SELECT uuid, router_uuid, source, destination, next_hop, metric
+             FROM router_routes
+             WHERE router_uuid = ?1
+             ORDER BY metric ASC",
+        )?;
+        collect(stmt.query_map(params![router_uuid], router_route_from_row)?)
+    }
+
+    pub fn remove_route(&self, router_uuid: &str, source: &str, destination: &str) -> Result<()> {
+        let conn = self.open()?;
+        conn.execute(
+            "DELETE FROM router_routes
+             WHERE router_uuid = ?1
+             AND source = ?2
+             AND destination = ?3",
+            params![router_uuid, source, destination],
+        )?;
         Ok(())
     }
 }

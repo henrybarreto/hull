@@ -1,4 +1,3 @@
 NXST_FLOW reply (xid=0x4):
-cookie=<COOKIE>, duration=<DURATION>, table=0, n_packets=<N_PACKETS>, n_bytes=<N_BYTES>, idle_age=<IDLE_AGE>, priority=239, arp=, dl_dst=<MAC>, arp_spa=10.0.0.0/24, arp_tpa=10.0.0.0/24, actions=drop
 cookie=<COOKIE>, duration=<DURATION>, table=0, n_packets=<N_PACKETS>, n_bytes=<N_BYTES>, idle_age=<IDLE_AGE>, priority=235, ip=, nw_src=10.0.0.0/24, nw_dst=10.0.0.0/24, actions=drop
 cookie=<COOKIE>, duration=<DURATION>, table=0, n_packets=<N_PACKETS>, n_bytes=<N_BYTES>, idle_age=<IDLE_AGE>, priority=0, actions=NORMAL

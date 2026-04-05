@@ -118,6 +118,52 @@ pub fn build_cli() -> Command {
                                 .about("Unset router uplink interface")
                                 .arg(Arg::new("router").required(true).help("Router name")),
                         ),
+                )
+                .subcommand(
+                    Command::new("route")
+                        .about("Manage router routing table")
+                        .subcommand(
+                            Command::new("add")
+                                .about("Add a route")
+                                .arg(Arg::new("router").required(true).help("Router name"))
+                                .arg(
+                                    Arg::new("source")
+                                        .required(true)
+                                        .help("Source CIDR (e.g. 10.0.0.0/24)"),
+                                )
+                                .arg(
+                                    Arg::new("destination")
+                                        .required(true)
+                                        .help("Destination CIDR (e.g. 0.0.0.0/0)"),
+                                )
+                                .arg(
+                                    Arg::new("next_hop")
+                                        .required(false)
+                                        .help("Next hop IP (e.g. 192.168.20.1)"),
+                                )
+                                .arg(
+                                    Arg::new("metric")
+                                        .required(false)
+                                        .help("Route metric (default 0)")
+                                        .value_parser(clap::value_parser!(u32)),
+                                ),
+                        )
+                        .subcommand(
+                            Command::new("rm")
+                                .about("Remove a route")
+                                .arg(Arg::new("router").required(true).help("Router name"))
+                                .arg(Arg::new("source").required(true).help("Source CIDR"))
+                                .arg(
+                                    Arg::new("destination")
+                                        .required(true)
+                                        .help("Destination CIDR"),
+                                ),
+                        )
+                        .subcommand(
+                            Command::new("ls")
+                                .about("List routes for a router")
+                                .arg(Arg::new("router").required(true).help("Router name")),
+                        ),
                 ),
         )
         .subcommand(

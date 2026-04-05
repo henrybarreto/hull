@@ -254,11 +254,24 @@ async fn run(matches: &clap::ArgMatches) -> Result<()> {
             Some(("ls", _)) => {
                 let routers = router_ops.list()?;
                 let mut output_list = Vec::new();
-                for r in routers {
+                for r in &routers {
                     let switches = router_ops.list_attached_switches(&r.name)?;
+                    let routes = router_ops.list_routes(&r.name)?;
+                    let routes_list: Vec<_> = routes
+                        .iter()
+                        .map(|rt| {
+                            serde_json::json!({
+                                "source": rt.source,
+                                "destination": rt.destination,
+                                "next_hop": rt.next_hop,
+                                "metric": rt.metric,
+                            })
+                        })
+                        .collect();
                     output_list.push(serde_json::json!({
                         "name": r.name,
                         "switches": switches,
+                        "routes": routes_list,
                         "link": {
                             "name": r.link_name,
                             "ip": r.link_ip,
@@ -322,6 +335,53 @@ async fn run(matches: &clap::ArgMatches) -> Result<()> {
                         "Unset router link",
                         serde_json::json!({ "router": router }),
                     ))?;
+                }
+                _ => unreachable!(),
+            },
+            Some(("route", route_m)) => match route_m.subcommand() {
+                Some(("add", m)) => {
+                    let router = m.get_one::<String>("router").unwrap();
+                    let source = m.get_one::<String>("source").unwrap();
+                    let destination = m.get_one::<String>("destination").unwrap();
+                    let next_hop = m.get_one::<String>("next_hop").map(|s| s.as_str());
+                    let metric = m.get_one::<u32>("metric").copied().unwrap_or(0);
+                    router_ops.add_route(router, source, destination, next_hop, metric)?;
+                    output(&SuccessResponse::with_data(
+                        "Added route",
+                        serde_json::json!({
+                            "router": router,
+                            "source": source,
+                            "destination": destination,
+                            "next_hop": next_hop,
+                            "metric": metric,
+                        }),
+                    ))?;
+                }
+                Some(("rm", m)) => {
+                    let router = m.get_one::<String>("router").unwrap();
+                    let source = m.get_one::<String>("source").unwrap();
+                    let destination = m.get_one::<String>("destination").unwrap();
+                    router_ops.rm_route(router, source, destination)?;
+                    output(&SuccessResponse::with_data(
+                        "Removed route",
+                        serde_json::json!({ "router": router, "source": source, "destination": destination }),
+                    ))?;
+                }
+                Some(("ls", m)) => {
+                    let router = m.get_one::<String>("router").unwrap();
+                    let routes = router_ops.list_routes(router)?;
+                    let output_list: Vec<_> = routes
+                        .iter()
+                        .map(|r| {
+                            serde_json::json!({
+                                "source": r.source,
+                                "destination": r.destination,
+                                "next_hop": r.next_hop,
+                                "metric": r.metric,
+                            })
+                        })
+                        .collect();
+                    output(&output_list)?;
                 }
                 _ => unreachable!(),
             },

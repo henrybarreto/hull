@@ -22,6 +22,7 @@ impl SwitchOps {
     pub fn new(db: Arc<Database>, config: Arc<Config>) -> Self {
         Self { db, config }
     }
+
     /// Create a switch and apply its flows.
     pub fn create(&self, name: &str, ip: &str, mask: u8) -> Result<()> {
         if self.db.get_switch(name).is_ok() {
@@ -211,26 +212,10 @@ impl SwitchOps {
         let cidr = format!("{}/{}", switch.ip, switch.mask);
         let ports = self.db.get_switch_ports_for_switch(&switch.name)?;
 
-        // NOTE: Apply per-port flows before switch-wide broadcast/drop flows.
+        // NOTE: Apply per-port flows before switch-wide drop flows.
         for port in &ports {
             self.apply_switch_port_flows(&self.config, switch, &ports, port)?;
         }
-
-        let port_outputs: Vec<String> = ports
-            .iter()
-            .map(|p| format!("output:{}", p.interface_name))
-            .collect();
-
-        ovs_ofctl(&[
-            "add-flow",
-            bridge,
-            &format!(
-                "priority=239,arp,dl_dst=ff:ff:ff:ff:ff:ff,arp_spa={},arp_tpa={},actions={}",
-                cidr,
-                cidr,
-                port_outputs.join(","),
-            ),
-        ])?;
 
         ovs_ofctl(&[
             "add-flow",
@@ -256,7 +241,6 @@ impl SwitchOps {
 
         let cidr = format!("{}/{}", switch.ip, switch.mask);
 
-        // NOTE: Priority 251/250 enforce intra-subnet path rules before destination matches.
         let other_ports: Vec<String> = ports
             .iter()
             .filter(|p| p.name != port.name)
@@ -273,8 +257,8 @@ impl SwitchOps {
             "add-flow",
             bridge,
             &format!(
-                "priority=251,ip,in_port={},dl_src={},nw_src={},nw_dst={},actions={}",
-                port.interface_name, port.mac, cidr, cidr, actions,
+                "priority=250,ip,in_port={},nw_src={},nw_dst={},actions={}",
+                port.interface_name, port.ip, cidr, actions,
             ),
         ])?;
 
@@ -282,7 +266,7 @@ impl SwitchOps {
             "add-flow",
             bridge,
             &format!(
-                "priority=250,ip,in_port={},nw_src={},nw_dst={},actions=drop",
+                "priority=245,ip,in_port={},nw_src={},nw_dst={},actions=drop",
                 port.interface_name, cidr, cidr,
             ),
         ])?;
@@ -300,8 +284,8 @@ impl SwitchOps {
             "add-flow",
             bridge,
             &format!(
-                "priority=240,arp,dl_dst={},arp_tpa={},actions=output:{}",
-                port.mac, port.ip, port.interface_name,
+                "priority=240,arp,arp_tpa={},actions=output:{}",
+                port.ip, port.interface_name,
             ),
         ])?;
 
@@ -321,15 +305,11 @@ impl SwitchOps {
 
         // NOTE: Delete specific flows by match to avoid removing unrelated flows if multiple
         // switches share a bridge.
-        for match_str in [
-            format!(
-                "priority=239,arp,dl_dst=ff:ff:ff:ff:ff:ff,arp_spa={},arp_tpa={}",
-                cidr, cidr
-            ),
-            format!("priority=235,ip,nw_src={},nw_dst={}", cidr, cidr),
-        ] {
-            let _ = ovs_ofctl(&["del-flows", bridge, &match_str]);
-        }
+        let _ = ovs_ofctl(&[
+            "del-flows",
+            bridge,
+            &format!("priority=235,ip,nw_src={},nw_dst={}", cidr, cidr),
+        ]);
 
         Ok(())
     }
@@ -346,11 +326,11 @@ impl SwitchOps {
 
         for match_str in [
             format!(
-                "priority=251,ip,in_port={},dl_src={},nw_src={},nw_dst={}",
-                port.interface_name, port.mac, cidr, cidr
+                "priority=250,ip,in_port={},nw_src={},nw_dst={}",
+                port.interface_name, port.ip, cidr
             ),
             format!(
-                "priority=250,ip,in_port={},nw_src={},nw_dst={}",
+                "priority=245,ip,in_port={},nw_src={},nw_dst={}",
                 port.interface_name, cidr, cidr
             ),
             format!("priority=240,ip,dl_dst={},nw_dst={}", port.mac, port.ip),

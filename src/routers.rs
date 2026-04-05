@@ -1,9 +1,10 @@
 use crate::config::Config;
-use crate::database::Database;
+use crate::database::{Database, Router};
 use crate::interfaces::Interface;
 use crate::switches::{ovs_ofctl, ovs_vsctl};
 use crate::utils::generate_deterministic_mac;
 use anyhow::{Result, anyhow};
+use ipnetwork::IpNetwork;
 use std::sync::Arc;
 
 pub struct RouterOps {
@@ -141,7 +142,7 @@ impl RouterOps {
         Ok(())
     }
 
-    /// Configure or clear a router uplink.
+    /// Configure or clear a router link.
     pub fn set_link(&self, router_name: &str, name: &str, ip: &str, mac: &str) -> Result<()> {
         if self.db.get_router(router_name).is_err() {
             return Err(anyhow!("Router '{}' does not exist", router_name));
@@ -183,7 +184,7 @@ impl RouterOps {
 
         if self.db.get_router_link(router_name).is_err() {
             return Err(anyhow!(
-                "Router '{}' does not have an uplink configured",
+                "Router '{}' does not have a link configured",
                 router_name
             ));
         }
@@ -227,7 +228,56 @@ impl RouterOps {
         Ok(())
     }
 
-    /// Apply all router flows for attached switches and optional uplink.
+    pub fn add_route(
+        &self,
+        router_name: &str,
+        source: &str,
+        destination: &str,
+        next_hop: Option<&str>,
+        metric: u32,
+    ) -> Result<()> {
+        if self.db.get_router(router_name).is_err() {
+            return Err(anyhow!("Router '{}' does not exist", router_name));
+        }
+
+        let router = self.db.get_router(router_name)?;
+        self.db
+            .create_route(&router.uuid, source, destination, next_hop, metric)?;
+
+        // TODO: We should avoid delete and replay the whole router flows here, but it's simpler
+        // for now.
+        self.delete_router_flows(&router.name)?;
+        self.apply_router_flows(&router.name)?;
+
+        Ok(())
+    }
+
+    pub fn rm_route(&self, router_name: &str, source: &str, destination: &str) -> Result<()> {
+        if self.db.get_router(router_name).is_err() {
+            return Err(anyhow!("Router '{}' does not exist", router_name));
+        }
+
+        let router = self.db.get_router(router_name)?;
+
+        // TODO: We should avoid delete and replay the whole router flows here, but it's simpler
+        // for now.
+        self.db.remove_route(&router.uuid, source, destination)?;
+        self.delete_router_flows(&router.name)?;
+        self.apply_router_flows(&router.name)?;
+
+        Ok(())
+    }
+
+    pub fn list_routes(&self, router_name: &str) -> Result<Vec<crate::database::RouterRoute>> {
+        if self.db.get_router(router_name).is_err() {
+            return Err(anyhow!("Router '{}' does not exist", router_name));
+        }
+
+        let router = self.db.get_router(router_name)?;
+
+        self.db.list_routes_for_router(&router.uuid)
+    }
+
     pub fn apply_router_flows(&self, name: &str) -> Result<()> {
         let bridge = &self.config.bridge_name;
 
@@ -249,8 +299,10 @@ impl RouterOps {
         for rp in &router_ports {
             let switch = self.db.get_switch(&rp.switch_name)?;
 
-            self.apply_router_gateway_inter_subnet_flows(&switch, &gateways)?;
+            self.apply_router_gateway_flows(&switch, &gateways)?;
         }
+
+        self.apply_router_routes_flows(&router)?;
 
         if let (Some(link_name), Some(link_mac), Some(link_ip)) = (
             router.link_name.as_ref(),
@@ -258,7 +310,8 @@ impl RouterOps {
             router.link_ip.as_ref(),
         ) {
             if let Ok(port) = get_ofport(bridge, link_name) {
-                self.apply_router_uplink_flows(link_mac, link_ip, &port)?;
+                self.apply_link_arp_flows(link_mac, link_ip, &port)?;
+                self.apply_link_nat_flows(&router, &port)?;
 
                 let mut seen_switches = std::collections::HashSet::new();
                 for rp in &router_ports {
@@ -289,12 +342,11 @@ impl RouterOps {
         let gateway_mac_hex = mac_to_hex(&gateway.0)?;
         let gateway_ip_hex = ip_to_hex(&gateway.1)?;
 
-        // NOTE: These responder flows make the router act as the gateway for the subnet.
         ovs_ofctl(&[
             "add-flow",
             bridge,
             &format!(
-                "priority=280, arp,arp_tpa={},arp_op=1, actions=move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[], mod_dl_src:{},load:0x2->NXM_OF_ARP_OP[], move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[], load:0x{}->NXM_NX_ARP_SHA[], move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[], load:0x{}->NXM_OF_ARP_SPA[],IN_PORT",
+                "priority=280,arp,arp_tpa={},arp_op=1,actions=move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],mod_dl_src:{},load:0x2->NXM_OF_ARP_OP[],move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[],load:0x{}->NXM_NX_ARP_SHA[],move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[],load:0x{}->NXM_OF_ARP_SPA[],IN_PORT",
                 &gateway.1, &gateway.0, gateway_mac_hex, gateway_ip_hex,
             ),
         ])?;
@@ -303,7 +355,7 @@ impl RouterOps {
             "add-flow",
             bridge,
             &format!(
-                "priority=280, icmp,nw_dst={},icmp_type=8, actions=move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[], mod_dl_src:{}, move:NXM_OF_IP_SRC[]->NXM_OF_IP_DST[], mod_nw_src:{},load:0->NXM_OF_ICMP_TYPE[],IN_PORT",
+                "priority=280,icmp,nw_dst={},icmp_type=8,actions=move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],mod_dl_src:{},move:NXM_OF_IP_SRC[]->NXM_OF_IP_DST[],mod_nw_src:{},load:0->NXM_OF_ICMP_TYPE[],IN_PORT",
                 &gateway.1, &gateway.0, &gateway.1
             ),
         ])?;
@@ -311,7 +363,7 @@ impl RouterOps {
         Ok(())
     }
 
-    fn apply_router_gateway_inter_subnet_flows(
+    fn apply_router_gateway_flows(
         &self,
         switch: &crate::database::Switch,
         gateways: &std::collections::HashMap<String, (String, String)>,
@@ -333,8 +385,8 @@ impl RouterOps {
                     "add-flow",
                     bridge,
                     &format!(
-                        "priority=265, ip,dl_dst={},nw_dst={},actions=mod_dl_src:{},mod_dl_dst:{},dec_ttl,NORMAL",
-                        to_gateway_mac, sp.ip, from_gateway_mac, sp.mac,
+                        "priority=265,ip,dl_dst={},nw_dst={},actions=mod_dl_src:{},mod_dl_dst:{},dec_ttl,output:{}",
+                        to_gateway_mac, sp.ip, from_gateway_mac, sp.mac, sp.interface_name,
                     ),
                 ])?;
             }
@@ -343,37 +395,226 @@ impl RouterOps {
         Ok(())
     }
 
-    /// Apply uplink flows (ARP responder and NAT return).
-    fn apply_router_uplink_flows(&self, mac: &str, ip: &str, port: &str) -> Result<()> {
+    /// Apply ARP responder flow for the link's external IP.
+    fn apply_link_arp_flows(&self, mac: &str, ip: &str, port: &str) -> Result<()> {
         let bridge = &self.config.bridge_name;
 
         let mac_hex = mac_to_hex(mac)?;
         let ip_hex = ip_to_hex(ip)?;
 
-        // ARP Responder for the router's external IP on the link.
         ovs_ofctl(&[
             "add-flow",
             bridge,
             &format!(
-                "priority=231, arp,in_port={},arp_tpa={},arp_op=1, actions=move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[], mod_dl_src:{},load:0x2->NXM_OF_ARP_OP[], move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[], load:0x{}->NXM_NX_ARP_SHA[], move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[], load:0x{}->NXM_OF_ARP_SPA[],IN_PORT",
+                "priority=231,arp,in_port={},arp_tpa={},arp_op=1,actions=move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],mod_dl_src:{},load:0x2->NXM_OF_ARP_OP[],move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[],load:0x{}->NXM_NX_ARP_SHA[],move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[],load:0x{}->NXM_OF_ARP_SPA[],IN_PORT",
                 port, ip, mac, mac_hex, ip_hex,
-            ),
-        ])?;
-
-        // NAT return flow: Un-NAT packets returning from the external network and resubmit them.
-        ovs_ofctl(&[
-            "add-flow",
-            bridge,
-            &format!(
-                "priority=235,in_port={},ip,nw_dst={},actions=ct(zone=1,nat,table=0)",
-                port, ip
             ),
         ])?;
 
         Ok(())
     }
 
-    /// Apply uplink SNAT/DNAT flows for one switch subnet.
+    /// Apply NAT flows for the link: return flow + per-route NAT flows.
+    fn apply_link_nat_flows(&self, router: &Router, port: &str) -> Result<()> {
+        let bridge = &self.config.bridge_name;
+        let link_ip = router.link_ip.as_ref().unwrap();
+        let link_mac = router.link_mac.as_ref().unwrap();
+
+        // Return flow: un-NAT packets returning from the external network and resubmit them.
+        ovs_ofctl(&[
+            "add-flow",
+            bridge,
+            &format!(
+                "priority=235,in_port={},ip,nw_dst={},actions=ct(zone=1,nat,table=0)",
+                port, link_ip
+            ),
+        ])?;
+
+        // Per-route NAT flows for non-inter-subnet destinations.
+        // route.source acts as a policy filter: only matching subnets get NATed.
+        let router_ports = self.db.list_router_ports_for_router(&router.name)?;
+        let routes = self.db.list_routes_for_router(&router.uuid)?;
+        let attached_cidrs: Vec<String> = router_ports
+            .iter()
+            .filter_map(|rp| self.db.get_switch(&rp.switch_name).ok())
+            .map(|s| format!("{}/{}", s.ip, s.mask))
+            .collect();
+
+        // Resolve all next_hop MACs upfront to avoid partial flow state on failure.
+        let next_hop_macs: std::collections::HashMap<String, String> = routes
+            .iter()
+            .filter_map(|r| r.next_hop.as_deref())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .map(|ip| resolve_neighbor_mac(ip).map(|mac| (ip.to_string(), mac)))
+            .collect::<Result<_>>()?;
+
+        for route in &routes {
+            let is_inter_subnet = attached_cidrs.iter().any(|c| c == &route.destination);
+            if is_inter_subnet {
+                continue;
+            }
+
+            let dst_prefix_len = route
+                .destination
+                .split('/')
+                .nth(1)
+                .and_then(|s| s.parse::<u8>().ok())
+                .unwrap_or(0);
+
+            let priority = (225 + dst_prefix_len as u32).saturating_sub(route.metric);
+
+            let mut new_actions = Vec::new();
+            new_actions.push(format!("ct(commit,zone=1,nat(src={}))", link_ip));
+            new_actions.push(format!("mod_dl_src:{}", link_mac));
+            if let Some(next_hop) = &route.next_hop {
+                new_actions.push(format!(
+                    "mod_dl_dst:{}",
+                    next_hop_macs.get(next_hop).unwrap()
+                ));
+            }
+            new_actions.push("dec_ttl".to_string());
+            new_actions.push(format!("output:{}", port));
+
+            ovs_ofctl(&[
+                "add-flow",
+                bridge,
+                &format!(
+                    "priority={},ct_state=+new+trk,ip,nw_src={},nw_dst={},actions={}",
+                    priority,
+                    route.source,
+                    route.destination,
+                    new_actions.join(",")
+                ),
+            ])?;
+
+            let mut est_actions = Vec::new();
+            est_actions.push("ct(zone=1,nat)".to_string());
+            est_actions.push(format!("mod_dl_src:{}", link_mac));
+            if let Some(next_hop) = &route.next_hop {
+                est_actions.push(format!(
+                    "mod_dl_dst:{}",
+                    next_hop_macs.get(next_hop).unwrap()
+                ));
+            }
+            est_actions.push("dec_ttl".to_string());
+            est_actions.push(format!("output:{}", port));
+
+            ovs_ofctl(&[
+                "add-flow",
+                bridge,
+                &format!(
+                    "priority={},ct_state=+est+trk,ip,nw_src={},nw_dst={},actions={}",
+                    priority,
+                    route.source,
+                    route.destination,
+                    est_actions.join(",")
+                ),
+            ])?;
+        }
+
+        // Drop traffic from attached subnets not covered by any route's source.
+        let covered_cidrs: Vec<&str> = routes.iter().map(|r| r.source.as_str()).collect();
+        for cidr in &attached_cidrs {
+            if !cidr_is_covered(cidr, &covered_cidrs) {
+                ovs_ofctl(&[
+                    "add-flow",
+                    bridge,
+                    &format!(
+                        "priority=220,ct_state=+new+trk,ip,nw_src={},actions=drop",
+                        cidr
+                    ),
+                ])?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn apply_router_routes_flows(&self, router: &Router) -> Result<()> {
+        let bridge = &self.config.bridge_name;
+
+        let router_ports = self.db.list_router_ports_for_router(&router.name)?;
+        let routes = self.db.list_routes_for_router(&router.uuid)?;
+
+        let cidr_to_switch: std::collections::HashMap<String, &str> = router_ports
+            .iter()
+            .filter_map(|rp| {
+                self.db
+                    .get_switch(&rp.switch_name)
+                    .ok()
+                    .map(|s| (format!("{}/{}", s.ip, s.mask), rp.switch_name.as_str()))
+            })
+            .collect();
+
+        // Resolve all next_hop MACs upfront to avoid partial flow state on failure.
+        let next_hop_macs: std::collections::HashMap<String, String> = routes
+            .iter()
+            .filter_map(|r| r.next_hop.as_deref())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .map(|ip| resolve_neighbor_mac(ip).map(|mac| (ip.to_string(), mac)))
+            .collect::<Result<_>>()?;
+
+        for route in &routes {
+            let Some(switch_name) = cidr_to_switch.get(&route.destination) else {
+                continue;
+            };
+
+            let dest_ports = self.db.get_switch_ports_for_switch(switch_name)?;
+            let dest_port_outputs: Vec<String> = dest_ports
+                .iter()
+                .map(|sp| format!("output:{}", sp.interface_name))
+                .collect();
+
+            let dst_prefix_len = route
+                .destination
+                .split('/')
+                .nth(1)
+                .and_then(|s| s.parse::<u8>().ok())
+                .unwrap_or(0);
+
+            let priority = (225 + dst_prefix_len as u32).saturating_sub(route.metric);
+
+            let actions = if let Some(next_hop) = &route.next_hop {
+                let next_hop_mac = next_hop_macs.get(next_hop).unwrap();
+                format!(
+                    "mod_dl_dst:{},{}",
+                    next_hop_mac,
+                    dest_port_outputs.join(",")
+                )
+            } else {
+                dest_port_outputs.join(",")
+            };
+
+            ovs_ofctl(&[
+                "add-flow",
+                bridge,
+                &format!(
+                    "priority={},ip,nw_src={},nw_dst={},actions={}",
+                    priority, route.source, route.destination, actions
+                ),
+            ])?;
+        }
+
+        Ok(())
+    }
+
+    fn delete_routes_flows(&self, router: &Router) -> Result<()> {
+        let bridge = &self.config.bridge_name;
+        let routes = self.db.list_routes_for_router(&router.uuid)?;
+
+        for route in &routes {
+            let _ = ovs_ofctl(&[
+                "del-flows",
+                bridge,
+                &format!("ip,nw_src={},nw_dst={}", route.source, route.destination),
+            ]);
+        }
+
+        Ok(())
+    }
+
     fn apply_router_link_flows(
         &self,
         router: &crate::database::Router,
@@ -382,99 +623,38 @@ impl RouterOps {
         port: &str,
     ) -> Result<()> {
         let bridge = &self.config.bridge_name;
-        let link_name = router.link_name.as_ref().unwrap();
         let switch_ports = self.db.get_switch_ports_for_switch(&switch.name)?;
 
-        // NOTE: Initial pass: send to conntrack to identify state.
         ovs_ofctl(&[
             "add-flow",
             bridge,
             &format!(
-                "priority=224, ip,nw_src={},ct_state=-trk,actions=ct(table=0,zone=1)",
+                "priority=224,ip,nw_src={},ct_state=-trk,actions=ct(table=0,zone=1)",
                 cidr
             ),
         ])?;
 
-        let mut common_egress_actions = Vec::new();
-        if let Some(src_mac) = &router.link_mac {
-            common_egress_actions.push(format!("mod_dl_src:{}", src_mac));
-        }
-
-        match get_gateway_mac(link_name) {
-            Ok(dst_mac) => common_egress_actions.push(format!("mod_dl_dst:{}", dst_mac)),
-            Err(e) => eprintln!("WARNING: Gateway MAC lookup failed: {}", e),
-        }
-
-        common_egress_actions.push("dec_ttl".to_string());
-        common_egress_actions.push(format!("output:{}", port));
-
-        // NOTE: Handle outbound packets based on conntrack state.
-        if let Some(link_ip) = &router.link_ip {
-            // New connections: Commit with SNAT.
-            let mut snat_actions = vec![format!("ct(commit,zone=1,nat(src={}))", link_ip)];
-            snat_actions.extend(common_egress_actions.clone());
-            ovs_ofctl(&[
-                "add-flow",
-                bridge,
-                &format!(
-                    "priority=225, ip,nw_src={},ct_state=+trk+new,actions={}",
-                    cidr,
-                    snat_actions.join(","),
-                ),
-            ])?;
-        }
-
-        // NOTE: Established connections: Just apply NAT state (un-NAT or no-NAT as committed).
-        let mut est_actions = vec!["ct(zone=1,nat)".to_string()];
-        est_actions.extend(common_egress_actions);
-        ovs_ofctl(&[
-            "add-flow",
-            bridge,
-            &format!(
-                "priority=225, ip,nw_src={},ct_state=+trk+est,actions={}",
-                cidr,
-                est_actions.join(","),
-            ),
-        ])?;
-
-        // NOTE: ARP Forwarding (Uplink).
-        let switch_port_outputs: Vec<String> = switch_ports
-            .iter()
-            .map(|sp| format!("output:{}", sp.interface_name))
-            .collect();
-
-        ovs_ofctl(&[
-            "add-flow",
-            bridge,
-            &format!(
-                "priority=225, in_port={},arp,arp_tpa={},actions={}",
-                port,
-                cidr,
-                switch_port_outputs.join(","),
-            ),
-        ])?;
-
         for sp in switch_ports {
-            let mut common_ingress_actions = Vec::new();
+            let mut ingress_actions = Vec::new();
             if let Some(src_mac) = &router.link_mac {
-                common_ingress_actions.push(format!("mod_dl_src:{}", src_mac));
+                ingress_actions.push(format!("mod_dl_src:{}", src_mac));
             }
 
-            common_ingress_actions.push(format!("mod_dl_dst:{}", sp.mac));
-            common_ingress_actions.push("dec_ttl".to_string());
-            common_ingress_actions.push(format!("output:{}", sp.interface_name));
+            ingress_actions.push(format!("mod_dl_dst:{}", sp.mac));
+            ingress_actions.push("dec_ttl".to_string());
+            ingress_actions.push(format!("output:{}", sp.interface_name));
 
             let mut direct_in_actions = vec!["ct(commit,zone=1)".to_string()];
-            direct_in_actions.extend(common_ingress_actions);
+            direct_in_actions.extend(ingress_actions);
 
             ovs_ofctl(&[
                 "add-flow",
                 bridge,
                 &format!(
-                    "priority=230, in_port={},ip,nw_dst={},actions={}",
+                    "priority=230,in_port={},ip,nw_dst={},actions={}",
                     port,
                     sp.ip,
-                    direct_in_actions.join(","),
+                    direct_in_actions.join(",")
                 ),
             ])?;
         }
@@ -482,7 +662,7 @@ impl RouterOps {
         Ok(())
     }
 
-    /// Delete all router flows for attached switches and optional uplink.
+    /// Delete all router flows for attached switches and optional link.
     pub fn delete_router_flows(&self, name: &str) -> Result<()> {
         let router = self.db.get_router(name)?;
         let router_ports = self.db.list_router_ports_for_router(name)?;
@@ -501,10 +681,14 @@ impl RouterOps {
             .as_ref()
             .and_then(|link_name| get_ofport(bridge, link_name).ok());
 
-        // NOTE: Link shared flows cleanup applies once per router.
         if let Some(port) = &link_port {
-            self.delete_router_uplink_flows(&router, port)?;
+            if let Some(link_ip) = &router.link_ip {
+                self.delete_link_arp_flows(link_ip, port)?;
+            }
+            self.delete_link_nat_flows(&router, port)?;
         }
+
+        self.delete_routes_flows(&router)?;
 
         let mut seen_switches = std::collections::HashSet::new();
         for rp in &router_ports {
@@ -515,42 +699,101 @@ impl RouterOps {
             let switch = self.db.get_switch(&rp.switch_name)?;
             self.delete_router_switch_flows(&switch, &router_gateways)?;
             if let Some(ofport) = &link_port {
-                self.delete_router_link_flows(&router, &switch, ofport)?;
+                self.delete_router_link_flows(&switch, ofport)?;
             }
         }
 
         Ok(())
     }
 
-    /// Delete shared uplink flows.
-    fn delete_router_uplink_flows(
-        &self,
-        router: &crate::database::Router,
-        port: &str,
-    ) -> Result<()> {
+    /// Delete ARP responder flow for the link's external IP.
+    fn delete_link_arp_flows(&self, ext_ip: &str, port: &str) -> Result<()> {
         let bridge = &self.config.bridge_name;
-        if let Some(ext_ip) = &router.link_ip {
-            let _ = ovs_ofctl(&[
-                "--strict",
-                "del-flows",
-                bridge,
-                &format!(
-                    "priority=231,arp,in_port={},arp_tpa={},arp_op=1",
-                    port, ext_ip
-                ),
-            ]);
 
-            let _ = ovs_ofctl(&[
-                "--strict",
-                "del-flows",
-                bridge,
-                &format!("priority=235,in_port={},ip,nw_dst={}", port, ext_ip),
-            ]);
-        }
+        let _ = ovs_ofctl(&[
+            "--strict",
+            "del-flows",
+            bridge,
+            &format!(
+                "priority=231,arp,in_port={},arp_tpa={},arp_op=1",
+                port, ext_ip
+            ),
+        ]);
+
         Ok(())
     }
 
-    /// Delete gateway and inter-subnet flows for one switch.
+    /// Delete NAT flows for the link: return flow + per-route NAT + ct_state flows.
+    fn delete_link_nat_flows(&self, router: &Router, port: &str) -> Result<()> {
+        let bridge = &self.config.bridge_name;
+        let router_ports = self.db.list_router_ports_for_router(&router.name)?;
+        let routes = self.db.list_routes_for_router(&router.uuid)?;
+
+        // Delete NAT return flow
+        if let Some(link_ip) = &router.link_ip {
+            let _ = ovs_ofctl(&[
+                "--strict",
+                "del-flows",
+                bridge,
+                &format!("priority=235,in_port={},ip,nw_dst={}", port, link_ip),
+            ]);
+        }
+
+        // Delete per-route NAT flows for external routes
+        let attached_cidrs: Vec<String> = router_ports
+            .iter()
+            .filter_map(|rp| self.db.get_switch(&rp.switch_name).ok())
+            .map(|s| format!("{}/{}", s.ip, s.mask))
+            .collect();
+
+        for route in &routes {
+            let is_inter_subnet = attached_cidrs.iter().any(|c| c == &route.destination);
+            if is_inter_subnet {
+                continue;
+            }
+
+            let dst_prefix_len = route
+                .destination
+                .split('/')
+                .nth(1)
+                .and_then(|s| s.parse::<u8>().ok())
+                .unwrap_or(0);
+
+            let priority = (225 + dst_prefix_len as u32).saturating_sub(route.metric);
+
+            for match_str in [
+                format!(
+                    "priority={},ct_state=+new+trk,ip,nw_src={},nw_dst={}",
+                    priority, route.source, route.destination
+                ),
+                format!(
+                    "priority={},ct_state=+est+trk,ip,nw_src={},nw_dst={}",
+                    priority, route.source, route.destination
+                ),
+            ] {
+                let _ = ovs_ofctl(&["--strict", "del-flows", bridge, &match_str]);
+            }
+        }
+
+        // Delete drop rules for uncovered subnets
+        let covered_cidrs: Vec<&str> = routes.iter().map(|r| r.source.as_str()).collect();
+        for cidr in &attached_cidrs {
+            if !cidr_is_covered(cidr, &covered_cidrs) {
+                let _ = ovs_ofctl(&[
+                    "--strict",
+                    "del-flows",
+                    bridge,
+                    &format!(
+                        "priority=220,ct_state=+new+trk,ip,nw_src={},actions=drop",
+                        cidr
+                    ),
+                ]);
+            }
+        }
+
+        Ok(())
+    }
+
     fn delete_router_switch_flows(
         &self,
         switch: &crate::database::Switch,
@@ -582,34 +825,13 @@ impl RouterOps {
         Ok(())
     }
 
-    /// Delete uplink flows for one switch subnet.
-    fn delete_router_link_flows(
-        &self,
-        router: &crate::database::Router,
-        switch: &crate::database::Switch,
-        port: &str,
-    ) -> Result<()> {
+    fn delete_router_link_flows(&self, switch: &crate::database::Switch, port: &str) -> Result<()> {
         let bridge = &self.config.bridge_name;
         let cidr = format!("{}/{}", switch.ip, switch.mask);
         let switch_ports = self.db.get_switch_ports_for_switch(&switch.name)?;
 
-        for match_str in [
-            format!("priority=224,ip,nw_src={},ct_state=-trk", cidr),
-            format!("priority=225,ip,nw_src={},ct_state=+trk+new", cidr),
-            format!("priority=225,ip,nw_src={},ct_state=+trk+est", cidr),
-            format!("priority=225,in_port={},arp,arp_tpa={}", port, cidr),
-        ] {
-            let _ = ovs_ofctl(&["--strict", "del-flows", bridge, &match_str]);
-        }
-
-        if let Some(ext_ip) = &router.link_ip {
-            let _ = ovs_ofctl(&[
-                "--strict",
-                "del-flows",
-                bridge,
-                &format!("priority=235,in_port={},ip,nw_dst={}", port, ext_ip),
-            ]);
-        }
+        let match_str = format!("priority=224,ip,nw_src={},ct_state=-trk", cidr);
+        let _ = ovs_ofctl(&["--strict", "del-flows", bridge, &match_str]);
 
         for sp in switch_ports {
             let _ = ovs_ofctl(&[
@@ -624,8 +846,6 @@ impl RouterOps {
     }
 }
 
-/// Convert an IPv4 address string (e.g. "10.0.0.1") to a hex string
-/// suitable for OVS `load` actions (e.g. "0a000001").
 fn ip_to_hex(ip: &str) -> Result<String> {
     let addr: std::net::Ipv4Addr = ip
         .parse()
@@ -637,8 +857,6 @@ fn ip_to_hex(ip: &str) -> Result<String> {
     ))
 }
 
-/// Convert a MAC address string (e.g. "52:54:00:ab:cd:ef") to a hex string
-/// suitable for OVS `load` actions (e.g. "525400abcdef").
 fn mac_to_hex(mac: &str) -> Result<String> {
     let parts: Vec<&str> = mac.split(':').collect();
     if parts.len() != 6 {
@@ -647,52 +865,6 @@ fn mac_to_hex(mac: &str) -> Result<String> {
     Ok(parts.join(""))
 }
 
-/// Get the MAC address of the default gateway for a given interface.
-fn get_gateway_mac(iface_name: &str) -> Result<String> {
-    let gateway_ip = Interface::get_gateway_ip(iface_name)
-        .or_else(|_| Interface::get_system_default_gateway_ip())?;
-
-    for attempt in 0..2 {
-        if let Ok(mac) = Interface::resolve_neighbor_mac(&gateway_ip) {
-            return Ok(mac);
-        }
-
-        if attempt == 0 {
-            let _ = std::process::Command::new("ping")
-                .args(["-c", "1", "-W", "1", &gateway_ip])
-                .output();
-        }
-    }
-
-    Err(anyhow!(
-        "could not resolve MAC address for gateway '{}' after attempt.",
-        gateway_ip
-    ))
-}
-
-/// Send a Gratuitous ARP from an OVS port.
-fn send_garp(bridge: &str, port: &str, ofport: &str, ip: &str) -> Result<()> {
-    let mac = Interface::get_mac(port)?;
-    let mac_hex = mac_to_hex(&mac)?;
-    let ip_hex = ip_to_hex(ip)?;
-
-    let packet = format!(
-        "ffffffffffff{}08060001080006040001{}{}ffffffffffff{}",
-        mac_hex, mac_hex, ip_hex, ip_hex
-    );
-
-    ovs_ofctl(&[
-        "packet-out",
-        bridge,
-        "none",
-        &format!("output:{}", ofport),
-        &packet,
-    ])?;
-
-    Ok(())
-}
-
-/// Get the OpenFlow port number (ofport) for a port on a given bridge.
 fn get_ofport(bridge: &str, port_name: &str) -> Result<String> {
     let _ = bridge;
     use crate::switches::ovs_vsctl;
@@ -708,8 +880,6 @@ fn get_ofport(bridge: &str, port_name: &str) -> Result<String> {
     Ok(ofport)
 }
 
-/// Compute the gateway IP for a switch subnet (always the .1 address).
-/// E.g. switch IP "10.0.0.0" → gateway "10.0.0.1"
 fn compute_gateway_ip(switch_ip: &str) -> Result<String> {
     let addr: std::net::Ipv4Addr = switch_ip
         .parse()
@@ -720,4 +890,43 @@ fn compute_gateway_ip(switch_ip: &str) -> Result<String> {
         "{}.{}.{}.{}",
         octets[0], octets[1], octets[2], octets[3]
     ))
+}
+
+fn resolve_neighbor_mac(ip: &str) -> Result<String> {
+    for _attempt in 0..2 {
+        let _ = std::process::Command::new("ping")
+            .args(["-c", "1", "-W", "1", ip])
+            .output();
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let output = std::process::Command::new("ip")
+            .args(["-j", "neigh", "show", ip])
+            .output()?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&stdout) {
+            if let Some(mac) = json
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|entry| entry["lladdr"].as_str())
+            {
+                return Ok(mac.to_string());
+            }
+        }
+    }
+
+    Err(anyhow!("could not resolve MAC for neighbor '{}'", ip))
+}
+
+fn cidr_is_covered(cidr: &str, sources: &[&str]) -> bool {
+    let Ok(cidr_net) = cidr.parse::<IpNetwork>() else {
+        return false;
+    };
+    sources.iter().any(|s| {
+        let Ok(source_net) = s.parse::<IpNetwork>() else {
+            return false;
+        };
+        source_net.contains(cidr_net.network()) || cidr_net.contains(source_net.network())
+    })
 }
