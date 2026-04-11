@@ -1,7 +1,9 @@
-pub mod cli;
+pub mod client;
 pub mod config;
+pub mod daemon;
 pub mod database;
 pub mod interfaces;
+pub mod protocol;
 pub mod routers;
 pub mod switches;
 pub mod utils;

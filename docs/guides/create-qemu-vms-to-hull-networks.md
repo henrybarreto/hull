@@ -1,12 +1,12 @@
 # Connecting QEMU VMs to Hull Networks
 
-Hull TAP interfaces are the bridge between QEMU virtual machines and the OVS fabric. This guide shows three practical examples: VMs on the same switch, VMs routed across subnets, and VMs with external NAT access.
+Hull TAP interfaces are the bridge between QEMU virtual machines and the OVS fabric. This guide shows three practical examples: VMs on the same switch, VMs routed across subnets, and VMs with external NAT access. The root-owned `hulld` daemon creates and owns the TAPs, while the rootless `hull` client configures the topology.
 
 ## Prerequisites
 
 - QEMU installed (`qemu-system-x86_64`)
 - A disk image for each VM (Alpine Linux, Ubuntu cloud image, etc.)
-- Hull initialized (`hull init`)
+- `hulld` running and Hull initialized (`hull init`)
 - Root privileges
 
 ## How It Works
@@ -54,6 +54,7 @@ Two VMs on the same subnet, communicating at layer 2.
 ### Step 1 - Set up Hull
 
 ```sh
+sudo hulld
 hull init
 
 hull interface create tap-vm1
@@ -165,6 +166,7 @@ graph TD
 ### Step 1 - Set up Hull
 
 ```sh
+sudo hulld
 hull init
 
 hull interface create tap-vm1
@@ -278,6 +280,7 @@ graph TD
 ### Step 1 - Set up Hull
 
 ```sh
+sudo hulld
 hull init
 
 hull interface create tap-vm1
@@ -353,7 +356,7 @@ When done, clean up everything:
 hull deinit
 ```
 
-`hull deinit` deletes the OVS bridge, all TAP interfaces, and the data directory.
+`hull deinit` removes the OVS bridge, TAP interfaces, and daemon-owned state.
 
 ## Important Notes
 

@@ -1,6 +1,6 @@
 # Getting Started with Hull
 
-Hull is a CLI tool for lightweight Open vSwitch (OVS) network management. It provides high-level abstractions for L2 switches, L3 routers, and TAP interfaces, persisting state in SQLite and syncing with OVS flows. All CLI output is JSON.
+Hull is a rootless CLI client for lightweight Open vSwitch (OVS) network management. It provides high-level abstractions for L2 switches, L3 routers, and TAP interfaces, but it sends every operation to `hulld`, which owns SQLite state, TAPs, and OVS sync. All CLI output is JSON.
 
 ## Architecture
 
@@ -47,16 +47,17 @@ graph TD
 ## Prerequisites
 
 - **Open vSwitch** installed and running (`ovs-vsctl`, `ovs-ofctl` available on PATH)
-- **Root privileges** for creating TAP interfaces and managing OVS bridges
+- **Root privileges** for running `hulld`
 - **Rust toolchain** (if building from source)
 
 ## Quick Start
 
 ### 1. Initialize Hull
 
-Create the OVS bridge, SQLite database, and config file:
+Start the daemon, then create the OVS bridge, SQLite database, and config file:
 
 ```sh
+sudo hulld
 hull init
 ```
 
@@ -64,6 +65,7 @@ This creates:
 - An OVS bridge named `hull0` (configurable via `HULL_BRIDGE`)
 - A SQLite database (`hull.db`) in the data directory
 - A config file (`hull.json`)
+- A daemon socket at `{HULL_PATH}/hulld.sock`
 
 ### 2. Create TAP Interfaces
 
@@ -112,7 +114,7 @@ hull router ls
 
 ### 9. Tear Down
 
-Remove the OVS bridge, all TAP interfaces, and the data directory:
+Remove the OVS bridge, TAP interfaces, and daemon-owned state:
 
 ```sh
 hull deinit
@@ -131,13 +133,13 @@ Hull resolves its data directory in this priority order:
 
 1. `HULL_PATH` environment variable
 2. `$XDG_DATA_HOME/hull`
-3. `/var/lib/hull` (if running as root)
-4. `~/.local/share/hull` (otherwise)
+3. `/var/lib/hull`
 
 ## Complete Example: Two Subnets with Inter-Subnet Routing
 
 ```sh
 # Initialize
+sudo hulld
 hull init
 
 # Create two TAP interfaces

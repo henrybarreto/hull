@@ -3,6 +3,26 @@ mod common;
 use common::{CliTestHarness, HullOutputExt};
 
 #[test]
+fn test_help_without_subcommand() {
+    let harness = CliTestHarness::new();
+    let output = harness.run(&[]);
+
+    assert!(
+        !output.status.success(),
+        "expected hull with no subcommand to exit non-zero"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{}\n{}", stdout, stderr);
+    assert!(
+        combined.contains("Usage: hull"),
+        "expected help output, got:\n{}",
+        combined
+    );
+}
+
+#[test]
 fn test_init_and_deinit() {
     let harness = CliTestHarness::new();
     harness.run(&["init"]).assert_success();

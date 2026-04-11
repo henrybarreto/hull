@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
+use std::process::Child;
 use std::process::Command;
 use std::sync::Arc;
 
@@ -223,6 +224,7 @@ pub struct CliTestHarness {
     pub switch: String,
     pub router: String,
     pub port: String,
+    daemon: Child,
 }
 
 impl CliTestHarness {
@@ -237,6 +239,29 @@ impl CliTestHarness {
         let bridge = format!("ht-{}", suffix);
         let root = PathBuf::from(format!("/tmp/hull-cli-{}", suffix));
         let _ = fs::remove_dir_all(&root);
+
+        fs::create_dir_all(&root).expect("failed to create cli test root");
+
+        let socket_path = root.join("hulld.sock");
+        let daemon_bin = std::env::var("CARGO_BIN_EXE_hulld")
+            .unwrap_or_else(|_| format!("{}/target/debug/hulld", env!("CARGO_MANIFEST_DIR")));
+        let daemon = Command::new(daemon_bin)
+            .arg("--log-format")
+            .arg("text")
+            .arg("--log-file")
+            .arg(root.join("hulld.log"))
+            .env("HULL_PATH", &root)
+            .env("HULL_BRIDGE", &bridge)
+            .spawn()
+            .expect("failed to start hulld");
+
+        for _ in 0..50 {
+            if socket_path.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+
         Self {
             root,
             bridge,
@@ -244,14 +269,15 @@ impl CliTestHarness {
             switch: format!("sw-{}", suffix),
             router: format!("rt-{}", suffix),
             port: format!("pt-{}", suffix),
+            daemon,
         }
     }
 
     pub fn run(&self, args: &[&str]) -> std::process::Output {
-        Command::new("cargo")
-            .arg("run")
-            .arg("--quiet")
-            .arg("--")
+        let hull_bin = std::env::var("CARGO_BIN_EXE_hull")
+            .unwrap_or_else(|_| format!("{}/target/debug/hull", env!("CARGO_MANIFEST_DIR")));
+
+        Command::new(hull_bin)
             .args(args)
             .env("HULL_PATH", &self.root)
             .env("HULL_BRIDGE", &self.bridge)
@@ -288,6 +314,8 @@ impl CliTestHarness {
 
 impl Drop for CliTestHarness {
     fn drop(&mut self) {
+        let _ = self.daemon.kill();
+        let _ = self.daemon.wait();
         self.cleanup_orphans();
         let _ = fs::remove_dir_all(&self.root);
     }

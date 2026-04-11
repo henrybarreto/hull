@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -40,19 +40,12 @@ impl Default for Config {
 
 /// Resolve the root data path for hull.
 pub fn get_root_path() -> Result<PathBuf> {
-    let is_root = unsafe { libc::getuid() == 0 };
-    let home = std::env::var("HOME").map(PathBuf::from).ok();
-
     let root_dir = if let Ok(dir) = std::env::var("HULL_PATH") {
         PathBuf::from(dir)
     } else if let Ok(dir) = std::env::var("XDG_DATA_HOME") {
         PathBuf::from(dir).join("hull")
-    } else if is_root {
-        PathBuf::from("/var/lib/hull")
     } else {
-        home.as_ref()
-            .map(|h| h.join(".local/share/hull"))
-            .ok_or_else(|| anyhow!("failed to resolve home directory"))?
+        PathBuf::from("/var/lib/hull")
     };
     Ok(root_dir)
 }
@@ -65,4 +58,11 @@ pub fn get_config_path(root: &Path, override_path: Option<PathBuf>) -> PathBuf {
 /// Resolve the database file path.
 pub fn get_db_path(root: &Path) -> PathBuf {
     root.join("hull.db")
+}
+
+/// Resolve the daemon socket path.
+pub fn get_socket_path(root: &Path) -> PathBuf {
+    std::env::var("HULL_SOCKET")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| root.join("hulld.sock"))
 }
