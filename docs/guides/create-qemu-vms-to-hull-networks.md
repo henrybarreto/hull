@@ -247,7 +247,7 @@ ping -c 3 10.1.0.2
 
 ## Example 3: VM with External Access via NAT
 
-A VM on a Hull switch reaches external networks through a router uplink with SNAT.
+A VM on a Hull switch reaches external networks through a router bridge port with SNAT.
 
 ```mermaid
 graph TD
@@ -261,7 +261,7 @@ graph TD
 
     subgraph TAPs["Host TAP Interfaces"]
         TAP1["tap-vm1"]
-        UPL["eth0\n192.168.1.100"]
+        PORT["hull0\n192.168.1.100"]
     end
 
     subgraph OVS["OVS Bridge hull0"]
@@ -270,8 +270,8 @@ graph TD
         RT["Router rt0\nSNAT/DNAT\nConntrack Zone 1"]
     end
 
-    EXT <-->|"Physical link"| UPL
-    UPL <--> RT
+    EXT <-->|"Physical link"| PORT
+    PORT <--> RT
     VM1 <--> TAP1
     TAP1 <--> SW0
     SW0 <--> RT
@@ -292,14 +292,14 @@ hull switch port create sw0 vm1-port tap-vm1
 hull router create rt0
 hull router attach rt0 sw0
 
-# Set uplink to a physical interface with external connectivity
-hull router link set rt0 eth0 192.168.1.100 52:54:00:ab:cd:ef
+# Set the router bridge port name and bridge IP/MAC
+hull router link set rt0 hull0 192.168.1.100 52:54:00:ab:cd:ef
 
-# Add a route for outbound traffic: source subnet, destination, next hop
-hull router route add rt0 10.0.0.0/24 0.0.0.0/0 192.168.1.1
+# Add a route for outbound traffic: source subnet, destination, next hop, next-hop MAC
+hull router route add rt0 10.0.0.0/24 0.0.0.0/0 192.168.1.1 60:18:95:75:6a:9d
 ```
 
-Replace `eth0`, `192.168.1.100`, and the MAC with your actual uplink interface details. The MAC must match the uplink interface's hardware address. The route's next hop (`192.168.1.1` in this example) must be reachable on the uplink's network -- it's typically your LAN's default gateway.
+Replace `hull0`, `192.168.1.100`, and the MAC with your actual bridge port details. If you want to use the bridge's own port name, pass the bridge name itself. The MAC must match the bridge-side endpoint you want Hull to use. The route's next hop (`192.168.1.1` in this example) must be reachable from that bridge port.
 
 ### Step 2 - Get the MAC address
 

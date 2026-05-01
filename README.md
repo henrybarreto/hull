@@ -17,18 +17,18 @@ Hull is a simple utility tool that simplifies creating and managing virtual netw
 git clone https://github.com/henrybarreto/hull
 ```
 
-2. Install the CLI tool using Cargo:
+2. Build the CLI tool using Cargo:
 
 ```sh
-cargo install --path client
+cargo build --manifest-path client/Cargo.toml --bin hull
 ```
 
-This installs the `hull` client from the `client` workspace member.
+This builds the `hull` client from the `client` package.
 
-Install the daemon separately:
+Build the daemon separately:
 
 ```sh
-cargo install --path daemon
+cargo build --manifest-path daemon/Cargo.toml --bin hulld
 ```
 
 Start `hulld` first, then use `hull` from another terminal.
@@ -36,8 +36,13 @@ Start `hulld` first, then use `hull` from another terminal.
 3. Test it:
 
 ```sh
-hull --version
+./client/target/debug/hull --version
 ```
+
+The binaries are built into each package's `target/debug` directory by default:
+
+- `client/target/debug/hull`
+- `daemon/target/debug/hulld`
 
 ## Configuration & environment
 
@@ -105,8 +110,7 @@ hull router attach router0 sw0
 ```
 
 Now, every VM connected to `sw0` can communicate with each other and the router.
-You can further configure the router to enable external connectivity by setting
-a link interface.
+You can further configure the router by setting a bridge port name on the link, including the bridge's own port name when you want the bridge-local endpoint.
 
 # License
 
