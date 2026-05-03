@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::UnixStream;
+use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
 
 use super::protocol::constants::{OFPG_ANY, OFPP_ANY, OFPTT_ALL};
 use super::protocol::error::OfErr;
@@ -72,7 +72,7 @@ pub struct Connection<S> {
 
 impl<S> Connection<S>
 where
-    S: AsyncRead + AsyncWrite + Unpin,
+    S: Read + Write + Unpin,
 {
     pub const fn new(stream: S) -> Self {
         Self {
@@ -93,16 +93,16 @@ where
     ///
     /// Returns an error if the peer closes the connection, sends an
     /// unexpected message, or replies with an `OpenFlow` error.
-    async fn read_frame(&mut self) -> Result<Vec<u8>> {
+    fn read_frame(&mut self) -> Result<Vec<u8>> {
         let mut header_buf = [0u8; 8];
-        self.stream.read_exact(&mut header_buf).await?;
+        self.stream.read_exact(&mut header_buf)?;
         let header = Header::parse(&header_buf)?;
         let mut frame = Vec::with_capacity(usize::from(header.length));
         frame.extend_from_slice(&header_buf);
         let body_len = usize::from(header.length).saturating_sub(8);
         let mut body = vec![0u8; body_len];
         if body_len > 0 {
-            self.stream.read_exact(&mut body).await?;
+            self.stream.read_exact(&mut body)?;
             frame.extend_from_slice(&body);
         }
         Ok(frame)
@@ -114,22 +114,22 @@ where
     ///
     /// Returns an error if the barrier request cannot be written or the
     /// expected reply is not received.
-    async fn write_frame(&mut self, frame: &[u8]) -> Result<()> {
-        self.stream.write_all(frame).await?;
+    fn write_frame(&mut self, frame: &[u8]) -> Result<()> {
+        self.stream.write_all(frame)?;
         Ok(())
     }
 
-    async fn read_message(&mut self) -> Result<Message> {
-        let frame = self.read_frame().await?;
+    fn read_message(&mut self) -> Result<Message> {
+        let frame = self.read_frame()?;
         Ok(decode(&frame)?)
     }
 
-    async fn wait_for_message<T, F>(&mut self, mut map_message: F) -> Result<T>
+    fn wait_for_message<T, F>(&mut self, mut map_message: F) -> Result<T>
     where
         F: FnMut(Message) -> Option<T>,
     {
         loop {
-            let msg = self.read_message().await?;
+            let msg = self.read_message()?;
             if let Message::Error {
                 error_type,
                 code,
@@ -148,12 +148,11 @@ where
         }
     }
 
-    async fn wait_for_barrier(&mut self, xid: u32) -> Result<()> {
+    fn wait_for_barrier(&mut self, xid: u32) -> Result<()> {
         self.wait_for_message(|msg| match msg {
             Message::BarrierReply { xid: reply_xid } if reply_xid == xid => Some(()),
             _ => None,
         })
-        .await
     }
 
     /// Perform the `OpenFlow` handshake.
@@ -162,10 +161,10 @@ where
     ///
     /// Returns an error if the peer closes the connection, sends an
     /// unexpected message, or replies with an `OpenFlow` error.
-    pub async fn handshake(&mut self) -> Result<()> {
+    pub fn handshake(&mut self) -> Result<()> {
         let hello_xid = self.next_xid();
-        self.write_frame(&encode_hello(hello_xid)).await?;
-        match self.read_message().await? {
+        self.write_frame(&encode_hello(hello_xid))?;
+        match self.read_message()? {
             Message::Hello => {}
             Message::Error {
                 error_type,
@@ -186,14 +185,11 @@ where
             }
         }
         let features_xid = self.next_xid();
-        self.write_frame(&encode_features_request(features_xid))
-            .await?;
-        let _ = self
-            .wait_for_message(|msg| match msg {
-                Message::FeaturesReply(reply) => Some(reply),
-                _ => None,
-            })
-            .await?;
+        self.write_frame(&encode_features_request(features_xid))?;
+        let _ = self.wait_for_message(|msg| match msg {
+            Message::FeaturesReply(reply) => Some(reply),
+            _ => None,
+        })?;
         Ok(())
     }
 
@@ -203,10 +199,10 @@ where
     ///
     /// Returns an error if the barrier request cannot be written or the
     /// expected reply is not received.
-    pub async fn send_barrier(&mut self) -> Result<()> {
+    pub fn send_barrier(&mut self) -> Result<()> {
         let xid = self.next_xid();
-        self.write_frame(&encode_barrier_request(xid)).await?;
-        self.wait_for_barrier(xid).await
+        self.write_frame(&encode_barrier_request(xid))?;
+        self.wait_for_barrier(xid)
     }
 
     /// Send a flow-mod message.
@@ -214,9 +210,9 @@ where
     /// # Errors
     ///
     /// Returns an error if the frame cannot be written to the stream.
-    pub async fn send_flow_mod(&mut self, mut flow_mod: Rule) -> Result<()> {
+    pub fn send_flow_mod(&mut self, mut flow_mod: Rule) -> Result<()> {
         flow_mod.xid = self.next_xid();
-        self.write_frame(&flow_mod.encode()).await
+        self.write_frame(&flow_mod.encode())
     }
 
     /// Send a flow-mod message and wait for the following barrier reply.
@@ -225,9 +221,9 @@ where
     ///
     /// Returns an error if either frame cannot be written or the barrier
     /// reply is not received.
-    pub async fn add_flow(&mut self, flow_mod: Rule) -> Result<()> {
-        self.send_flow_mod(flow_mod).await?;
-        self.send_barrier().await
+    pub fn add_flow(&mut self, flow_mod: Rule) -> Result<()> {
+        self.send_flow_mod(flow_mod)?;
+        self.send_barrier()
     }
 
     /// Delete flows matching an optional cookie and wait for the barrier.
@@ -235,7 +231,7 @@ where
     /// # Errors
     ///
     /// Returns an error if the delete flow-mod or barrier reply fails.
-    pub async fn delete_flows(&mut self, cookie: Option<u64>) -> Result<()> {
+    pub fn delete_flows(&mut self, cookie: Option<u64>) -> Result<()> {
         let mut flow_mod = Rule::delete(self.next_xid(), OFPTT_ALL, Match::any())
             .with_out_port(OFPP_ANY)
             .with_out_group(OFPG_ANY);
@@ -243,8 +239,8 @@ where
             Some(cookie) => flow_mod.with_cookie(cookie).with_cookie_mask(u64::MAX),
             None => flow_mod.with_cookie(0).with_cookie_mask(0),
         };
-        self.write_frame(&flow_mod.encode()).await?;
-        self.send_barrier().await
+        self.write_frame(&flow_mod.encode())?;
+        self.send_barrier()
     }
 }
 
@@ -254,10 +250,10 @@ impl Connection<UnixStream> {
     /// # Errors
     ///
     /// Returns an error if the socket connection or handshake fails.
-    pub async fn connect_unix(path: impl AsRef<Path>) -> Result<Self> {
-        let stream = UnixStream::connect(path).await?;
+    pub fn connect_unix(path: impl AsRef<Path>) -> Result<Self> {
+        let stream = UnixStream::connect(path)?;
         let mut client = Self::new(stream);
-        client.handshake().await?;
+        client.handshake()?;
         Ok(client)
     }
 
@@ -266,8 +262,8 @@ impl Connection<UnixStream> {
     /// # Errors
     ///
     /// Returns an error if the socket connection or handshake fails.
-    pub async fn connect_bridge(bridge: &str) -> Result<Self> {
-        Self::connect_unix(bridge_socket_path(bridge)).await
+    pub fn connect_bridge(bridge: &str) -> Result<Self> {
+        Self::connect_unix(bridge_socket_path(bridge))
     }
 }
 

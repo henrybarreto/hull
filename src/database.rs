@@ -1,4 +1,4 @@
-use crate::utils::generate_random_mac;
+use crate::utils::{generate_random_mac, stable_uuid};
 use anyhow::{Result, anyhow};
 use rusqlite::{Connection, params};
 use std::path::PathBuf;
@@ -336,7 +336,7 @@ impl Database {
     /// Returns an error if the database insert fails or the switch cannot be reloaded.
     pub fn create_switch(&self, name: &str, ip: &str, mask: u8) -> Result<Switch> {
         debug!(switch = %name, ip = %ip, mask, "creating switch record");
-        let uuid = uuid::Uuid::new_v4().to_string();
+        let uuid = stable_uuid("switch", &[name]).to_string();
         let conn = self.open()?;
         conn.execute(
             "INSERT INTO switches (uuid, name, ip, mask) VALUES (?1, ?2, ?3, ?4)",
@@ -386,7 +386,7 @@ impl Database {
     /// Returns an error if the database insert fails or the router cannot be reloaded.
     pub fn create_router(&self, name: &str) -> Result<Router> {
         debug!(router = %name, "creating router record");
-        let uuid = uuid::Uuid::new_v4().to_string();
+        let uuid = stable_uuid("router", &[name]).to_string();
         let conn = self.open()?;
         conn.execute(
             "INSERT INTO routers (uuid, name) VALUES (?1, ?2)",
@@ -476,7 +476,7 @@ impl Database {
     /// Returns an error if the database insert fails or the interface cannot be reloaded.
     pub fn create_interface(&self, name: &str, mac: &str) -> Result<Interface> {
         debug!(interface = %name, "creating interface record");
-        let uuid = uuid::Uuid::new_v4().to_string();
+        let uuid = stable_uuid("interface", &[name]).to_string();
         let conn = self.open()?;
         conn.execute(
             "INSERT INTO interfaces (uuid, name, mac) VALUES (?1, ?2, ?3)",
@@ -532,7 +532,7 @@ impl Database {
         _mac: Option<&str>,
     ) -> Result<RouterPort> {
         debug!(router = %router_name, switch = %switch_name, "creating router port record");
-        let uuid = uuid::Uuid::new_v4().to_string();
+        let uuid = stable_uuid("router_port", &[router_name, switch_name]).to_string();
         let conn = self.open()?;
         conn.execute(
             "INSERT INTO router_ports (uuid, router_uuid, switch_uuid)
@@ -600,7 +600,7 @@ impl Database {
         ip: &str,
     ) -> Result<SwitchPort> {
         debug!(port = %name, switch = %switch_name, interface = %interface_name, "creating switch port record");
-        let uuid = uuid::Uuid::new_v4().to_string();
+        let uuid = stable_uuid("switch_port", &[name]).to_string();
         let conn = self.open()?;
         conn.execute(
             "INSERT INTO switch_ports (uuid, name, switch_uuid, interface_uuid, ip)
@@ -691,7 +691,7 @@ impl Database {
         metric: u32,
     ) -> Result<RouterRoute> {
         debug!(router_uuid = %router_uuid, source = %source, destination = %destination, metric, "creating route record");
-        let uuid = uuid::Uuid::new_v4().to_string();
+        let uuid = stable_uuid("route", &[router_uuid, source, destination]).to_string();
         let conn = self.open()?;
         if let Some(next_hop) = next_hop
             && next_hop_mac.is_none()

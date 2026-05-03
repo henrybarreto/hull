@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use uuid::Uuid;
 
 /// Flow ownership kinds encoded into the high bits of an OVS cookie.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +41,18 @@ pub fn generate_deterministic_mac(router_name: &str, switch_name: &str) -> Strin
         "02:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
         hash[0], hash[1], hash[2], hash[3], hash[4]
     )
+}
+
+/// Generate a stable UUID from a type tag and one or more identity fields.
+pub fn stable_uuid(kind: &str, values: &[&str]) -> Uuid {
+    let mut key = String::from("hull:");
+    key.push_str(kind);
+    for value in values {
+        key.push(':');
+        key.push_str(value);
+    }
+
+    Uuid::new_v5(&Uuid::NAMESPACE_OID, key.as_bytes())
 }
 
 /// Derive a stable cookie from a UUID string and a flow ownership kind.
@@ -94,5 +107,15 @@ mod tests {
 
         assert_ne!(switch_cookie, router_cookie);
         Ok(())
+    }
+
+    #[test]
+    fn stable_uuid_is_reproducible() {
+        let a = stable_uuid("switch", &["test-sw"]);
+        let b = stable_uuid("switch", &["test-sw"]);
+        let c = stable_uuid("router", &["test-sw"]);
+
+        assert_eq!(a, b);
+        assert_ne!(a, c);
     }
 }

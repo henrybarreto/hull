@@ -7,8 +7,8 @@ use anyhow::{Result, anyhow};
 use ipnetwork::IpNetwork;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
-use tokio::time::sleep;
 use tracing::{debug, trace};
 
 use crate::openflow::protocol::action::Action;
@@ -54,11 +54,11 @@ impl RouterOps {
         .with_cookie(cookie)
     }
 
-    async fn add_packet_flow(&self, of: &mut of::OF, flow: Rule) -> Result<()> {
-        of.insert(flow).await
+    fn add_packet_flow(&self, of: &mut of::OF, flow: Rule) -> Result<()> {
+        of.insert(flow)
     }
 
-    async fn insert_flow(&self, bridge: &str, cookie: u64, flow: impl AsRef<str>) -> Result<()> {
+    fn insert_flow(&self, bridge: &str, cookie: u64, flow: impl AsRef<str>) -> Result<()> {
         // NOTE: The remaining shell-backed path only covers NXAST_CT/NXAST_NAT.
         // The local OpenFlow text/spec sources and installed headers do not
         // expose those wire structs yet.
@@ -67,21 +67,20 @@ impl RouterOps {
             "add-flow",
             bridge,
             &format!("cookie=0x{cookie:016x},{flow}"),
-        ])
-        .await?;
+        ])?;
         Ok(())
     }
 
-    async fn remove_flows(&self, of: &mut of::OF, cookie: u64) -> Result<()> {
-        of.remove(Some(cookie)).await
+    fn remove_flows(&self, of: &mut of::OF, cookie: u64) -> Result<()> {
+        of.remove(Some(cookie))
     }
 
-    async fn wait_for_ofport(&self, interface_name: &str) -> Result<u32> {
+    fn wait_for_ofport(&self, interface_name: &str) -> Result<u32> {
         for _ in 0..50 {
-            if let Some(ofport) = self.ovs.interface_ofport(interface_name).await? {
+            if let Some(ofport) = self.ovs.interface_ofport(interface_name)? {
                 return Ok(ofport);
             }
-            sleep(Duration::from_millis(50)).await;
+            thread::sleep(Duration::from_millis(50));
         }
 
         Err(anyhow!(
@@ -97,14 +96,14 @@ impl RouterOps {
     ///
     /// # Errors
     /// Returns an error if the router already exists, database updates fail, or flow programming fails.
-    pub async fn create(&self, name: &str) -> Result<()> {
+    pub fn create(&self, name: &str) -> Result<()> {
         debug!(router = %name, "creating router");
         if self.db.get_router(name).is_ok() {
             return Err(anyhow!("Router '{name}' already exists"));
         }
 
         let router = self.db.create_router(name)?;
-        self.apply_router_flows(&router.name).await?;
+        self.apply_router_flows(&router.name)?;
 
         Ok(())
     }
@@ -113,7 +112,7 @@ impl RouterOps {
     ///
     /// # Errors
     /// Returns an error if the router does not exist, database updates fail, or flow deletion fails.
-    pub async fn remove(&self, name: &str) -> Result<()> {
+    pub fn remove(&self, name: &str) -> Result<()> {
         debug!(router = %name, "removing router");
         if self.db.get_router(name).is_err() {
             return Err(anyhow!("Router '{name}' does not exist"));
@@ -121,7 +120,7 @@ impl RouterOps {
 
         let router = self.db.get_router(name)?;
 
-        self.delete_router_flows(&router.name).await?;
+        self.delete_router_flows(&router.name)?;
         self.db.remove_router(&router.name)?;
 
         Ok(())
@@ -161,7 +160,7 @@ impl RouterOps {
     /// # Errors
     /// Returns an error if either object does not exist, the pair is already attached,
     /// or database/flow programming fails.
-    pub async fn attach(&self, router_name: &str, switch_name: &str) -> Result<()> {
+    pub fn attach(&self, router_name: &str, switch_name: &str) -> Result<()> {
         debug!(router = %router_name, switch = %switch_name, "attaching switch to router");
         if self.db.get_router(router_name).is_err() {
             return Err(anyhow!("Router '{router_name}' does not exist"));
@@ -190,13 +189,13 @@ impl RouterOps {
             ));
         }
 
-        self.delete_router_flows(&router.name).await?;
+        self.delete_router_flows(&router.name)?;
 
         // TODO: This is inefficient, we delete and re-apply all flows for the router on every
         // attach/detach.
         self.db
             .create_router_port(&router.name, &switch.name, None, None)?;
-        self.apply_router_flows(&router.name).await?;
+        self.apply_router_flows(&router.name)?;
 
         Ok(())
     }
@@ -206,7 +205,7 @@ impl RouterOps {
     /// # Errors
     /// Returns an error if either object does not exist, the pair is not attached,
     /// or database/flow programming fails.
-    pub async fn detach(&self, router_name: &str, switch_name: &str) -> Result<()> {
+    pub fn detach(&self, router_name: &str, switch_name: &str) -> Result<()> {
         debug!(router = %router_name, switch = %switch_name, "detaching switch from router");
         if self.db.get_router(router_name).is_err() {
             return Err(anyhow!("Router '{router_name}' does not exist"));
@@ -227,12 +226,12 @@ impl RouterOps {
         let router = self.db.get_router(router_name)?;
         let switch = self.db.get_switch(switch_name)?;
 
-        self.delete_router_flows(&router.name).await?;
+        self.delete_router_flows(&router.name)?;
 
         // TODO: This is inefficient, we delete and re-apply all flows for the router on every
         // attach/detach.
         self.db.remove_router_port(&router.name, &switch.name)?;
-        self.apply_router_flows(&router.name).await?;
+        self.apply_router_flows(&router.name)?;
 
         Ok(())
     }
@@ -242,19 +241,13 @@ impl RouterOps {
     /// # Errors
     /// Returns an error if the router or bridge port is missing, the port is already in use,
     /// or database/flow programming fails.
-    pub async fn set_link(
-        &self,
-        router_name: &str,
-        port_name: &str,
-        ip: &str,
-        mac: &str,
-    ) -> Result<()> {
+    pub fn set_link(&self, router_name: &str, port_name: &str, ip: &str, mac: &str) -> Result<()> {
         debug!(router = %router_name, port = %port_name, ip = %ip, mac = %mac, "setting router link");
         if self.db.get_router(router_name).is_err() {
             return Err(anyhow!("Router '{router_name}' does not exist"));
         }
 
-        if !Interface::exists(port_name).await {
+        if !Interface::exists(port_name) {
             return Err(anyhow!(
                 "Bridge port '{port_name}' does not exist on system"
             ));
@@ -274,14 +267,13 @@ impl RouterOps {
         if !self.is_bridge_local_port(port_name) {
             let _ = self
                 .ovs
-                .add_port(&self.config.bridge_name, port_name, serde_json::json!({}))
-                .await;
+                .add_port(&self.config.bridge_name, port_name, serde_json::json!({}));
         }
 
         // TODO: We should avoid delete and replay the whole router flows here, but it's simpler
         // for now.
-        self.delete_router_flows(&router.name).await?;
-        self.apply_router_flows(&router.name).await?;
+        self.delete_router_flows(&router.name)?;
+        self.apply_router_flows(&router.name)?;
 
         Ok(())
     }
@@ -290,7 +282,7 @@ impl RouterOps {
     ///
     /// # Errors
     /// Returns an error if the router does not exist, does not have a link, or flow/database operations fail.
-    pub async fn unset_link(&self, router_name: &str) -> Result<()> {
+    pub fn unset_link(&self, router_name: &str) -> Result<()> {
         debug!(router = %router_name, "unsetting router link");
         if self.db.get_router(router_name).is_err() {
             return Err(anyhow!("Router '{router_name}' does not exist"));
@@ -307,15 +299,15 @@ impl RouterOps {
         if let Some(port_name) = router.link_name.as_ref()
             && !self.is_bridge_local_port(port_name)
         {
-            let _ = self.ovs.del_port(&self.config.bridge_name, port_name).await;
+            let _ = self.ovs.del_port(&self.config.bridge_name, port_name);
         }
 
         self.db.update_router_link(&router.name, None, None, None)?;
 
         // TODO: We should avoid delete and replay the whole router flows here, but it's simpler
         // for now.
-        self.delete_router_flows(&router.name).await?;
-        self.apply_router_flows(&router.name).await?;
+        self.delete_router_flows(&router.name)?;
+        self.apply_router_flows(&router.name)?;
 
         Ok(())
     }
@@ -324,7 +316,7 @@ impl RouterOps {
     ///
     /// # Errors
     /// Returns an error if database access or flow programming fails.
-    pub async fn sync(&self) -> Result<()> {
+    pub fn sync(&self) -> Result<()> {
         debug!("syncing routers from database");
         let routers = self.db.list_routers()?;
         for router in &routers {
@@ -334,14 +326,13 @@ impl RouterOps {
             {
                 trace!(router = %router.name, port = %port_name, "ensuring router link port exists");
                 self.ovs
-                    .add_port(&self.config.bridge_name, port_name, serde_json::json!({}))
-                    .await?;
+                    .add_port(&self.config.bridge_name, port_name, serde_json::json!({}))?;
             } else if let Some(port_name) = &router.link_name {
                 trace!(router = %router.name, port = %port_name, "router link port already local");
             }
 
-            self.delete_router_flows(&router.name).await?;
-            self.apply_router_flows(&router.name).await?;
+            self.delete_router_flows(&router.name)?;
+            self.apply_router_flows(&router.name)?;
         }
 
         Ok(())
@@ -351,7 +342,7 @@ impl RouterOps {
     ///
     /// # Errors
     /// Returns an error if the router does not exist, database updates fail, or flow programming fails.
-    pub async fn add_route(
+    pub fn add_route(
         &self,
         router_name: &str,
         source: &str,
@@ -385,8 +376,8 @@ impl RouterOps {
 
         // TODO: We should avoid delete and replay the whole router flows here, but it's simpler
         // for now.
-        self.delete_router_flows(&router.name).await?;
-        self.apply_router_flows(&router.name).await?;
+        self.delete_router_flows(&router.name)?;
+        self.apply_router_flows(&router.name)?;
 
         Ok(())
     }
@@ -395,7 +386,7 @@ impl RouterOps {
     ///
     /// # Errors
     /// Returns an error if the router does not exist, database updates fail, or flow programming fails.
-    pub async fn rm_route(&self, router_name: &str, source: &str, destination: &str) -> Result<()> {
+    pub fn rm_route(&self, router_name: &str, source: &str, destination: &str) -> Result<()> {
         debug!(router = %router_name, source = %source, destination = %destination, "removing route");
         if self.db.get_router(router_name).is_err() {
             return Err(anyhow!("Router '{router_name}' does not exist"));
@@ -406,8 +397,8 @@ impl RouterOps {
         // TODO: We should avoid delete and replay the whole router flows here, but it's simpler
         // for now.
         self.db.remove_route(&router.uuid, source, destination)?;
-        self.delete_router_flows(&router.name).await?;
-        self.apply_router_flows(&router.name).await?;
+        self.delete_router_flows(&router.name)?;
+        self.apply_router_flows(&router.name)?;
 
         Ok(())
     }
@@ -430,12 +421,12 @@ impl RouterOps {
     ///
     /// # Errors
     /// Returns an error if the router does not exist or any flow/database operation fails.
-    pub async fn apply_router_flows(&self, name: &str) -> Result<()> {
+    pub fn apply_router_flows(&self, name: &str) -> Result<()> {
         trace!(router = %name, "applying router flows");
         let router = self.db.get_router(name)?;
         let cookie = Self::router_cookie(&router)?;
         let router_ports = self.db.list_router_ports_for_router(name)?;
-        let mut of = of::OF::connect(&self.config.bridge_name).await?;
+        let mut of = of::OF::connect(&self.config.bridge_name)?;
 
         let mut gateways = std::collections::HashMap::new();
         for router_port in &router_ports {
@@ -448,8 +439,7 @@ impl RouterOps {
                 &mut of,
                 cookie,
                 (gateway_mac.clone(), gateway_ip.clone()),
-            )
-            .await?;
+            )?;
 
             gateways.insert(router_port.switch_name.clone(), (gateway_mac, gateway_ip));
         }
@@ -457,23 +447,19 @@ impl RouterOps {
         for rp in &router_ports {
             let switch = self.db.get_switch(&rp.switch_name)?;
 
-            self.apply_router_gateway_flows(&mut of, cookie, &switch, &gateways)
-                .await?;
+            self.apply_router_gateway_flows(&mut of, cookie, &switch, &gateways)?;
         }
 
-        self.apply_router_routes_flows(&mut of, cookie, &router)
-            .await?;
+        self.apply_router_routes_flows(&mut of, cookie, &router)?;
 
         if let (Some(link_name), Some(link_mac), Some(link_ip)) = (
             router.link_name.as_ref(),
             router.link_mac.as_ref(),
             router.link_ip.as_ref(),
         ) {
-            self.apply_link_arp_flows(&mut of, cookie, link_mac, link_ip, link_name)
-                .await?;
+            self.apply_link_arp_flows(&mut of, cookie, link_mac, link_ip, link_name)?;
 
-            self.apply_link_nat_flows(cookie, &router, link_name)
-                .await?;
+            self.apply_link_nat_flows(cookie, &router, link_name)?;
 
             let mut seen_switches = std::collections::HashSet::new();
             for rp in &router_ports {
@@ -484,8 +470,7 @@ impl RouterOps {
                 let switch = self.db.get_switch(&rp.switch_name)?;
                 let cidr = format!("{}/{}", switch.ip, switch.mask);
 
-                self.apply_router_link_flows(cookie, &router, &switch, &cidr, link_name)
-                    .await?;
+                self.apply_router_link_flows(cookie, &router, &switch, &cidr, link_name)?;
             }
         }
 
@@ -493,7 +478,7 @@ impl RouterOps {
     }
 
     /// Apply gateway flows and inter-subnet routing for one switch.
-    async fn apply_router_gateway_arp_flows(
+    fn apply_router_gateway_arp_flows(
         &self,
         of: &mut of::OF,
         cookie: u64,
@@ -539,8 +524,7 @@ impl RouterOps {
                     Action::output(OFPP_IN_PORT),
                 ],
             ),
-        )
-        .await?;
+        )?;
 
         self.add_packet_flow(
             of,
@@ -577,13 +561,12 @@ impl RouterOps {
                     Action::output(OFPP_IN_PORT),
                 ],
             ),
-        )
-        .await?;
+        )?;
 
         Ok(())
     }
 
-    async fn apply_router_gateway_flows(
+    fn apply_router_gateway_flows(
         &self,
         of: &mut of::OF,
         cookie: u64,
@@ -608,7 +591,7 @@ impl RouterOps {
 
             let other_ports = self.db.get_switch_ports_for_switch(other_switch_name)?;
             for sp in other_ports {
-                let sp_ofport = self.wait_for_ofport(&sp.interface_name).await?;
+                let sp_ofport = self.wait_for_ofport(&sp.interface_name)?;
                 let sp_mac = parse_mac(&sp.mac)?;
                 let sp_ip = parse_ipv4(&sp.ip)?;
 
@@ -629,8 +612,7 @@ impl RouterOps {
                             Action::output(sp_ofport),
                         ],
                     ),
-                )
-                .await?;
+                )?;
             }
         }
 
@@ -638,7 +620,7 @@ impl RouterOps {
     }
 
     /// Apply ARP responder flow for the link's external IP.
-    async fn apply_link_arp_flows(
+    fn apply_link_arp_flows(
         &self,
         of: &mut of::OF,
         cookie: u64,
@@ -647,7 +629,7 @@ impl RouterOps {
         port: &str,
     ) -> Result<()> {
         trace!(port = %port, "applying router link arp flows");
-        let port_ofport = self.wait_for_ofport(port).await?;
+        let port_ofport = self.wait_for_ofport(port)?;
         let mac = parse_mac(mac)?;
         let ip = parse_ipv4(ip)?;
 
@@ -688,14 +670,13 @@ impl RouterOps {
                     Action::output(OFPP_IN_PORT),
                 ],
             ),
-        )
-        .await?;
+        )?;
 
         Ok(())
     }
 
     /// Apply NAT flows for the link: return flow + per-route NAT flows.
-    async fn apply_link_nat_flows(&self, cookie: u64, router: &Router, port: &str) -> Result<()> {
+    fn apply_link_nat_flows(&self, cookie: u64, router: &Router, port: &str) -> Result<()> {
         trace!(router = %router.name, port = %port, "applying router link nat flows");
         let bridge = &self.config.bridge_name;
         let Some(link_ip) = router.link_ip.as_ref() else {
@@ -712,8 +693,7 @@ impl RouterOps {
             format!(
                 "priority=235,in_port={port},ip,nw_dst={link_ip},actions=ct(zone=1,nat,table=0)"
             ),
-        )
-        .await?;
+        )?;
 
         // Per-route NAT flows for non-inter-subnet destinations.
         // route.source acts as a policy filter: only matching subnets get NATed.
@@ -758,8 +738,7 @@ impl RouterOps {
                     route.destination,
                     new_actions.join(",")
                 ),
-            )
-            .await?;
+            )?;
 
             let mut est_actions = Vec::new();
             est_actions.push("ct(zone=1,nat)".to_string());
@@ -779,8 +758,7 @@ impl RouterOps {
                     route.destination,
                     est_actions.join(",")
                 ),
-            )
-            .await?;
+            )?;
         }
 
         // Drop traffic from attached subnets not covered by any route's source.
@@ -791,15 +769,14 @@ impl RouterOps {
                     bridge,
                     cookie,
                     format!("priority=220,ct_state=+new+trk,ip,nw_src={cidr},actions=drop"),
-                )
-                .await?;
+                )?;
             }
         }
 
         Ok(())
     }
 
-    async fn apply_router_routes_flows(
+    fn apply_router_routes_flows(
         &self,
         of: &mut of::OF,
         cookie: u64,
@@ -827,9 +804,7 @@ impl RouterOps {
             let dest_ports = self.db.get_switch_ports_for_switch(switch_name)?;
             let mut dest_port_outputs = Vec::new();
             for sp in &dest_ports {
-                dest_port_outputs.push(Action::output(
-                    self.wait_for_ofport(&sp.interface_name).await?,
-                ));
+                dest_port_outputs.push(Action::output(self.wait_for_ofport(&sp.interface_name)?));
             }
 
             let dst_prefix_len = route
@@ -864,14 +839,13 @@ impl RouterOps {
                     ]),
                     actions,
                 ),
-            )
-            .await?;
+            )?;
         }
 
         Ok(())
     }
 
-    async fn apply_router_link_flows(
+    fn apply_router_link_flows(
         &self,
         cookie: u64,
         router: &crate::database::Router,
@@ -886,8 +860,7 @@ impl RouterOps {
             &self.config.bridge_name,
             cookie,
             format!("priority=224,ip,nw_src={cidr},ct_state=-trk,actions=ct(table=0,zone=1)"),
-        )
-        .await?;
+        )?;
 
         for sp in switch_ports {
             let mut ingress_actions = Vec::new();
@@ -910,8 +883,7 @@ impl RouterOps {
                     sp.ip,
                     direct_in_actions.join(",")
                 ),
-            )
-            .await?;
+            )?;
         }
 
         Ok(())
@@ -921,12 +893,12 @@ impl RouterOps {
     ///
     /// # Errors
     /// Returns an error if the router is missing or flow deletion fails.
-    pub async fn delete_router_flows(&self, name: &str) -> Result<()> {
+    pub fn delete_router_flows(&self, name: &str) -> Result<()> {
         debug!(router = %name, "deleting router flows");
         let router = self.db.get_router(name)?;
         let cookie = Self::router_cookie(&router)?;
-        let mut of = of::OF::connect(&self.config.bridge_name).await?;
-        let _ = self.remove_flows(&mut of, cookie).await;
+        let mut of = of::OF::connect(&self.config.bridge_name)?;
+        let _ = self.remove_flows(&mut of, cookie);
 
         Ok(())
     }
@@ -1000,12 +972,11 @@ fn cidr_is_covered(cidr: &str, sources: &[&str]) -> bool {
 }
 
 /// Run ovs-ofctl and return stdout on success.
-async fn ovs_ofctl(args: &[&str]) -> Result<String> {
+fn ovs_ofctl(args: &[&str]) -> Result<String> {
     trace!(arg_count = args.len(), "running ovs-ofctl");
-    let output = tokio::process::Command::new("ovs-ofctl")
+    let output = std::process::Command::new("ovs-ofctl")
         .args(args)
-        .output()
-        .await?;
+        .output()?;
     if !output.status.success() {
         return Err(anyhow!(
             "ovs-ofctl failed: {}",

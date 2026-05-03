@@ -13,9 +13,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
-use tokio::net::{UnixListener, UnixStream};
+
+use std::io::{Read, Write};
+use std::net::Shutdown;
+use std::os::unix::net::{UnixListener, UnixStream};
 use tracing::{debug, error, info, trace};
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
@@ -97,11 +98,10 @@ fn main() {
 /// Returns an error if the process is not root, the socket cannot be created, or the
 /// daemon cannot accept or handle requests.
 pub fn run(log_format: LogFormat, log_level: LevelFilter, log_file: PathBuf) -> Result<()> {
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_async(log_format, log_level, log_file))
+    run_sync(log_format, log_level, log_file)
 }
 
-async fn run_async(log_format: LogFormat, log_level: LevelFilter, log_file: PathBuf) -> Result<()> {
+fn run_sync(log_format: LogFormat, log_level: LevelFilter, log_file: PathBuf) -> Result<()> {
     let output = std::process::Command::new("id").arg("-u").output()?;
     let uid = String::from_utf8(output.stdout)?;
     if uid.trim() != "0" {
@@ -119,7 +119,7 @@ async fn run_async(log_format: LogFormat, log_level: LevelFilter, log_file: Path
         "initialized logging"
     );
 
-    reconcile_startup_state(&root_path).await?;
+    reconcile_startup_state(&root_path)?;
 
     let socket_path = get_socket_path(&root_path);
     if socket_path.exists() {
@@ -132,10 +132,10 @@ async fn run_async(log_format: LogFormat, log_level: LevelFilter, log_file: Path
     log_daemon_start(&socket_path);
 
     loop {
-        match listener.accept().await {
+        match listener.accept() {
             Ok((stream, _)) => {
                 trace!("accepted daemon connection");
-                if let Err(e) = handle_connection(stream).await {
+                if let Err(e) = handle_connection(stream) {
                     error!(event = "done", operation = "daemon", message = %format!("hulld request error: {e:#}"));
                 }
             }
@@ -186,7 +186,7 @@ fn init_logging(log_format: LogFormat, log_level: LevelFilter, log_file: &Path) 
     Ok(())
 }
 
-async fn reconcile_startup_state(root_path: &Path) -> Result<()> {
+fn reconcile_startup_state(root_path: &Path) -> Result<()> {
     let db_path = get_db_path(root_path);
     if !db_path.exists() {
         info!(db_path = %db_path.display(), "skipping startup reconciliation");
@@ -202,12 +202,12 @@ async fn reconcile_startup_state(root_path: &Path) -> Result<()> {
     );
 
     let storage = Arc::new(Database::new(db_path));
-    let ovs = hull::ovs::BridgeClient::connect().await?;
+    let ovs = hull::ovs::BridgeClient::connect()?;
     let ovs = Arc::new(ovs);
-    ensure_infrastructure(&config, &ovs).await?;
+    ensure_infrastructure(&config, &ovs)?;
 
     let interface_ops = interfaces::InterfaceOps::new(storage);
-    interface_ops.sync().await?;
+    interface_ops.sync()?;
 
     info!(
         bridge = %config.bridge_name,
@@ -245,11 +245,11 @@ fn log_request_err(op: &str, message: &str) {
     error!(event = "done", operation = %op, message = %message);
 }
 
-async fn handle_connection(mut stream: UnixStream) -> Result<()> {
+fn handle_connection(mut stream: UnixStream) -> Result<()> {
     let mut buffer = Vec::new();
     let mut temp_buf = [0u8; 4096];
     loop {
-        let n = stream.read(&mut temp_buf).await?;
+        let n = stream.read(&mut temp_buf)?;
         if n == 0 {
             break;
         }
@@ -268,7 +268,7 @@ async fn handle_connection(mut stream: UnixStream) -> Result<()> {
     let op = operation_name(&request.command);
     debug!(operation = op, "parsed request");
     log_request_start(op);
-    let response = match handle_request(request).await {
+    let response = match handle_request(request) {
         Ok(value) => {
             log_request_ok(op);
             value
@@ -280,8 +280,8 @@ async fn handle_connection(mut stream: UnixStream) -> Result<()> {
     };
 
     let response_bytes = serde_json::to_vec_pretty(&response)?;
-    stream.write_all(&response_bytes).await?;
-    stream.shutdown().await?;
+    stream.write_all(&response_bytes)?;
+    stream.shutdown(Shutdown::Both)?;
     Ok(())
 }
 
@@ -312,7 +312,7 @@ fn operation_name(command: &HullCommand) -> &'static str {
     }
 }
 
-async fn handle_request(request: Request) -> Result<serde_json::Value> {
+fn handle_request(request: Request) -> Result<serde_json::Value> {
     let Request {
         config,
         bridge_name,
@@ -330,14 +330,14 @@ async fn handle_request(request: Request) -> Result<serde_json::Value> {
         "dispatching request"
     );
 
-    let ovs = hull::ovs::BridgeClient::connect().await?;
+    let ovs = hull::ovs::BridgeClient::connect()?;
 
     if matches!(&command, HullCommand::Init) {
-        return handle_init(root_path, config_path, db_path, bridge_name, &ovs).await;
+        return handle_init(root_path, config_path, db_path, bridge_name, &ovs);
     }
 
     if matches!(&command, HullCommand::Deinit) {
-        return handle_deinit(root_path, config_path, db_path, &ovs).await;
+        return handle_deinit(root_path, config_path, db_path, &ovs);
     }
 
     if !is_hull_initialized {
@@ -355,7 +355,7 @@ async fn handle_request(request: Request) -> Result<serde_json::Value> {
     let switch_ops = switches::SwitchOps::new(storage.clone(), config_arc.clone(), ovs_arc.clone());
     let router_ops = routers::RouterOps::new(storage.clone(), config_arc.clone(), ovs_arc.clone());
 
-    ensure_infrastructure(&config, &ovs_arc).await?;
+    ensure_infrastructure(&config, &ovs_arc)?;
 
     handle_initialized_command(
         command,
@@ -365,10 +365,9 @@ async fn handle_request(request: Request) -> Result<serde_json::Value> {
         switch_ops,
         router_ops,
     )
-    .await
 }
 
-async fn handle_init(
+fn handle_init(
     root_path: PathBuf,
     config_path: PathBuf,
     db_path: PathBuf,
@@ -401,7 +400,7 @@ async fn handle_init(
     trace!("initializing database");
     storage.init()?;
     debug!(bridge = %config.bridge_name, "creating infrastructure");
-    create_infrastructure(&config, ovs).await?;
+    create_infrastructure(&config, ovs)?;
 
     Ok(serde_json::json!({
         "status": "success",
@@ -409,7 +408,7 @@ async fn handle_init(
     }))
 }
 
-async fn handle_deinit(
+fn handle_deinit(
     root_path: PathBuf,
     config_path: PathBuf,
     db_path: PathBuf,
@@ -431,7 +430,7 @@ async fn handle_deinit(
     let storage = Database::new(db_path.clone());
     let config = Config::load(&config_path)?;
     trace!(bridge = %config.bridge_name, "destroying infrastructure");
-    destroy_infrastructure(&config, &storage, ovs).await?;
+    destroy_infrastructure(&config, &storage, ovs)?;
 
     drop(storage);
     trace!("removing persisted state");
@@ -444,7 +443,7 @@ async fn handle_deinit(
     }))
 }
 
-async fn handle_initialized_command(
+fn handle_initialized_command(
     command: HullCommand,
     config: Config,
     storage: Arc<Database>,
@@ -453,18 +452,16 @@ async fn handle_initialized_command(
     router_ops: routers::RouterOps,
 ) -> Result<serde_json::Value> {
     match command {
-        HullCommand::Interface(subcommand) => {
-            handle_interface_command(subcommand, &interface_ops).await
-        }
+        HullCommand::Interface(subcommand) => handle_interface_command(subcommand, &interface_ops),
         HullCommand::Switch(subcommand) => {
-            handle_switch_command(subcommand, &config, &storage, &switch_ops, &router_ops).await
+            handle_switch_command(subcommand, &config, &storage, &switch_ops, &router_ops)
         }
         HullCommand::Router(subcommand) => {
-            handle_router_command(subcommand, &config, &switch_ops, &router_ops).await
+            handle_router_command(subcommand, &config, &switch_ops, &router_ops)
         }
         HullCommand::Sync => {
-            interface_ops.sync().await?;
-            reconcile_all_flows(&config, &switch_ops, &router_ops).await?;
+            interface_ops.sync()?;
+            reconcile_all_flows(&config, &switch_ops, &router_ops)?;
             Ok(serde_json::json!({
                 "status": "success",
                 "message": "All flows synced from database state",
@@ -474,14 +471,14 @@ async fn handle_initialized_command(
     }
 }
 
-async fn handle_interface_command(
+fn handle_interface_command(
     subcommand: InterfaceCommand,
     interface_ops: &interfaces::InterfaceOps,
 ) -> Result<serde_json::Value> {
     match subcommand {
         InterfaceCommand::Ls => Ok(interface_list_response(interface_ops.list()?)),
         InterfaceCommand::Create { name, mac } => {
-            let interface = interface_ops.create(&name, mac.as_deref()).await?;
+            let interface = interface_ops.create(&name, mac.as_deref())?;
             Ok(serde_json::json!({
                 "status": "success",
                 "message": "Created interface",
@@ -490,7 +487,7 @@ async fn handle_interface_command(
             }))
         }
         InterfaceCommand::Rm { name } => {
-            interface_ops.remove(&name).await?;
+            interface_ops.remove(&name)?;
             Ok(serde_json::json!({
                 "status": "success",
                 "message": "Removed interface",
@@ -500,7 +497,7 @@ async fn handle_interface_command(
     }
 }
 
-async fn handle_switch_command(
+fn handle_switch_command(
     subcommand: SwitchCommand,
     config: &Config,
     storage: &Database,
@@ -510,8 +507,8 @@ async fn handle_switch_command(
     match subcommand {
         SwitchCommand::Ls => switch_list_response(switch_ops.list()?, storage),
         SwitchCommand::Create { name, ip, mask } => {
-            switch_ops.create(&name, &ip, mask).await?;
-            reconcile_all_flows(config, switch_ops, router_ops).await?;
+            switch_ops.create(&name, &ip, mask)?;
+            reconcile_all_flows(config, switch_ops, router_ops)?;
             Ok(serde_json::json!({
                 "status": "success",
                 "message": "Created switch",
@@ -519,8 +516,8 @@ async fn handle_switch_command(
             }))
         }
         SwitchCommand::Rm { name } => {
-            switch_ops.remove(&name).await?;
-            reconcile_all_flows(config, switch_ops, router_ops).await?;
+            switch_ops.remove(&name)?;
+            reconcile_all_flows(config, switch_ops, router_ops)?;
             Ok(serde_json::json!({
                 "status": "success",
                 "message": "Removed switch",
@@ -528,12 +525,12 @@ async fn handle_switch_command(
             }))
         }
         SwitchCommand::Port(subcommand) => {
-            handle_switch_port_command(subcommand, config, switch_ops, router_ops).await
+            handle_switch_port_command(subcommand, config, switch_ops, router_ops)
         }
     }
 }
 
-async fn handle_switch_port_command(
+fn handle_switch_port_command(
     subcommand: SwitchPortCommand,
     config: &Config,
     switch_ops: &switches::SwitchOps,
@@ -546,10 +543,8 @@ async fn handle_switch_port_command(
             switch,
             interface,
         } => {
-            switch_ops
-                .create_switch_port(&name, &switch, &interface)
-                .await?;
-            reconcile_all_flows(config, switch_ops, router_ops).await?;
+            switch_ops.create_switch_port(&name, &switch, &interface)?;
+            reconcile_all_flows(config, switch_ops, router_ops)?;
             Ok(serde_json::json!({
                 "status": "success",
                 "message": "Created switch port",
@@ -559,8 +554,8 @@ async fn handle_switch_port_command(
             }))
         }
         SwitchPortCommand::Rm { switch, name } => {
-            switch_ops.remove_switch_port(&switch, &name).await?;
-            reconcile_all_flows(config, switch_ops, router_ops).await?;
+            switch_ops.remove_switch_port(&switch, &name)?;
+            reconcile_all_flows(config, switch_ops, router_ops)?;
             Ok(serde_json::json!({
                 "status": "success",
                 "message": "Removed switch port",
@@ -571,7 +566,7 @@ async fn handle_switch_port_command(
     }
 }
 
-async fn handle_router_command(
+fn handle_router_command(
     subcommand: RouterCommand,
     config: &Config,
     switch_ops: &switches::SwitchOps,
@@ -580,8 +575,8 @@ async fn handle_router_command(
     match subcommand {
         RouterCommand::Ls => router_list_response(router_ops.list()?, router_ops),
         RouterCommand::Create { name } => {
-            router_ops.create(&name).await?;
-            reconcile_all_flows(config, switch_ops, router_ops).await?;
+            router_ops.create(&name)?;
+            reconcile_all_flows(config, switch_ops, router_ops)?;
             Ok(serde_json::json!({
                 "status": "success",
                 "message": "Created router",
@@ -589,8 +584,8 @@ async fn handle_router_command(
             }))
         }
         RouterCommand::Rm { name } => {
-            router_ops.remove(&name).await?;
-            reconcile_all_flows(config, switch_ops, router_ops).await?;
+            router_ops.remove(&name)?;
+            reconcile_all_flows(config, switch_ops, router_ops)?;
             Ok(serde_json::json!({
                 "status": "success",
                 "message": "Removed router",
@@ -598,8 +593,8 @@ async fn handle_router_command(
             }))
         }
         RouterCommand::Attach { router, switch } => {
-            router_ops.attach(&router, &switch).await?;
-            reconcile_all_flows(config, switch_ops, router_ops).await?;
+            router_ops.attach(&router, &switch)?;
+            reconcile_all_flows(config, switch_ops, router_ops)?;
             Ok(serde_json::json!({
                 "status": "success",
                 "message": "Attached switch to router",
@@ -608,8 +603,8 @@ async fn handle_router_command(
             }))
         }
         RouterCommand::Detach { router, switch } => {
-            router_ops.detach(&router, &switch).await?;
-            reconcile_all_flows(config, switch_ops, router_ops).await?;
+            router_ops.detach(&router, &switch)?;
+            reconcile_all_flows(config, switch_ops, router_ops)?;
             Ok(serde_json::json!({
                 "status": "success",
                 "message": "Detached switch from router",
@@ -618,15 +613,15 @@ async fn handle_router_command(
             }))
         }
         RouterCommand::Link(subcommand) => {
-            handle_router_link_command(subcommand, config, switch_ops, router_ops).await
+            handle_router_link_command(subcommand, config, switch_ops, router_ops)
         }
         RouterCommand::Route(subcommand) => {
-            handle_router_route_command(subcommand, config, switch_ops, router_ops).await
+            handle_router_route_command(subcommand, config, switch_ops, router_ops)
         }
     }
 }
 
-async fn handle_router_link_command(
+fn handle_router_link_command(
     subcommand: RouterLinkCommand,
     config: &Config,
     switch_ops: &switches::SwitchOps,
@@ -639,8 +634,8 @@ async fn handle_router_link_command(
             ip,
             mac,
         } => {
-            router_ops.set_link(&router, &port, &ip, &mac).await?;
-            reconcile_all_flows(config, switch_ops, router_ops).await?;
+            router_ops.set_link(&router, &port, &ip, &mac)?;
+            reconcile_all_flows(config, switch_ops, router_ops)?;
             Ok(serde_json::json!({
                 "status": "success",
                 "message": "Set router link",
@@ -651,8 +646,8 @@ async fn handle_router_link_command(
             }))
         }
         RouterLinkCommand::Unset { router } => {
-            router_ops.unset_link(&router).await?;
-            reconcile_all_flows(config, switch_ops, router_ops).await?;
+            router_ops.unset_link(&router)?;
+            reconcile_all_flows(config, switch_ops, router_ops)?;
             Ok(serde_json::json!({
                 "status": "success",
                 "message": "Unset router link",
@@ -662,7 +657,7 @@ async fn handle_router_link_command(
     }
 }
 
-async fn handle_router_route_command(
+fn handle_router_route_command(
     subcommand: RouterRouteCommand,
     config: &Config,
     switch_ops: &switches::SwitchOps,
@@ -677,17 +672,15 @@ async fn handle_router_route_command(
             next_hop_mac,
             metric,
         } => {
-            router_ops
-                .add_route(
-                    &router,
-                    &source,
-                    &destination,
-                    next_hop.as_deref(),
-                    next_hop_mac.as_deref(),
-                    metric,
-                )
-                .await?;
-            reconcile_all_flows(config, switch_ops, router_ops).await?;
+            router_ops.add_route(
+                &router,
+                &source,
+                &destination,
+                next_hop.as_deref(),
+                next_hop_mac.as_deref(),
+                metric,
+            )?;
+            reconcile_all_flows(config, switch_ops, router_ops)?;
             Ok(serde_json::json!({
                 "status": "success",
                 "message": "Added route",
@@ -704,8 +697,8 @@ async fn handle_router_route_command(
             source,
             destination,
         } => {
-            router_ops.rm_route(&router, &source, &destination).await?;
-            reconcile_all_flows(config, switch_ops, router_ops).await?;
+            router_ops.rm_route(&router, &source, &destination)?;
+            reconcile_all_flows(config, switch_ops, router_ops)?;
             Ok(serde_json::json!({
                 "status": "success",
                 "message": "Removed route",
@@ -818,53 +811,53 @@ fn router_list_routes(routes: &[hull::database::RouterRoute]) -> Vec<serde_json:
         .collect()
 }
 
-async fn create_infrastructure(config: &Config, ovs: &hull::ovs::BridgeClient) -> Result<()> {
+fn create_infrastructure(config: &Config, ovs: &hull::ovs::BridgeClient) -> Result<()> {
     debug!(bridge = %config.bridge_name, "creating infrastructure");
-    ovs.add_bridge(&config.bridge_name).await
+    ovs.add_bridge(&config.bridge_name)
 }
 
-async fn destroy_infrastructure(
+fn destroy_infrastructure(
     config: &Config,
     storage: &Database,
     ovs: &hull::ovs::BridgeClient,
 ) -> Result<()> {
     debug!(bridge = %config.bridge_name, "destroying infrastructure");
-    ovs.del_bridge(&config.bridge_name).await?;
+    ovs.del_bridge(&config.bridge_name)?;
 
     let Ok(interfaces) = storage.list_interfaces() else {
         return Ok(());
     };
 
     for interface in interfaces {
-        let _ = Interface::delete(&interface.name).await;
+        let _ = Interface::delete(&interface.name);
     }
 
     Ok(())
 }
 
-async fn ensure_infrastructure(config: &Config, ovs: &hull::ovs::BridgeClient) -> Result<()> {
+fn ensure_infrastructure(config: &Config, ovs: &hull::ovs::BridgeClient) -> Result<()> {
     trace!(bridge = %config.bridge_name, "ensuring infrastructure");
-    let bridges = ovs.list_bridges().await?;
+    let bridges = ovs.list_bridges()?;
     if bridges.iter().any(|l| l == &config.bridge_name) {
         trace!(bridge = %config.bridge_name, "bridge already exists");
         return Ok(());
     }
 
     debug!(bridge = %config.bridge_name, "bridge missing; creating infrastructure");
-    create_infrastructure(config, ovs).await?;
+    create_infrastructure(config, ovs)?;
 
     Ok(())
 }
 
-async fn reconcile_all_flows(
+fn reconcile_all_flows(
     config: &Config,
     switch_ops: &switches::SwitchOps,
     router_ops: &routers::RouterOps,
 ) -> Result<()> {
     debug!(bridge = %config.bridge_name, "reconciling flows");
-    let mut of = hull::of::OF::connect(&config.bridge_name).await?;
-    of.remove(None).await?;
-    switch_ops.sync().await?;
-    router_ops.sync().await?;
+    let mut of = hull::of::OF::connect(&config.bridge_name)?;
+    of.remove(None)?;
+    switch_ops.sync()?;
+    router_ops.sync()?;
     Ok(())
 }

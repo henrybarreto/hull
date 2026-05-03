@@ -1,117 +1,100 @@
 # Hull
 
-Hull is a simple utility tool that simplifies creating and managing virtual networks using Open vSwitch.
+![rust edition](https://img.shields.io/badge/rust-2024-black)
+![status](https://img.shields.io/badge/status-experimental-orange)
 
-## Requirements
+Hull is a lightweight Open vSwitch (OVS) network management tool. It provides a
+CLI for managing virtual networks with switches, routers, and network interfaces.
 
-- rust
-- ovs-vsctl, ovs-ofctl
-- ip
-- ping
+## Architecture
 
-## Installation
+Hull uses a client-daemon architecture:
 
-1. Clone this repository:
+- **hull** (client) — CLI tool that sends commands to the daemon
+- **hulld** (daemon) — Privileged backend that owns SQLite state, TAP interfaces, and OVS sync
 
-```sh
-git clone https://github.com/henrybarreto/hull
-```
+The daemon must run as root to manage OVS bridges and TAP interfaces.
 
-2. Build the CLI tool using Cargo:
+## Build
 
-```sh
+Build with Cargo:
+
+```bash
 cargo build --manifest-path client/Cargo.toml --bin hull
-```
-
-This builds the `hull` client from the `client` package.
-
-Build the daemon separately:
-
-```sh
 cargo build --manifest-path daemon/Cargo.toml --bin hulld
 ```
 
-Start `hulld` first, then use `hull` from another terminal.
+## Quick Start
 
-3. Test it:
+1. Start the daemon (as root):
 
-```sh
-./client/target/debug/hull --version
+```bash
+sudo ./daemon/target/debug/hulld
 ```
 
-The binaries are built into each package's `target/debug` directory by default:
+2. Initialize the project:
 
-- `client/target/debug/hull`
-- `daemon/target/debug/hulld`
-
-## Configuration & environment
-
-Hull determines its on-disk layout and configuration file location from the
-following sources (in precedence order):
-
-- CLI `--config <path>` argument (highest precedence)
-- `HULL_PATH` environment variable (root directory for Hull data)
-- XDG data directory & defaults described below
-
-Environment variables supported by the codebase:
-
-- `HULL_PATH` — root directory used for images, instances, locks and the
-  default `hull.json`. Resolution order when this is not set:
-    1. `$XDG_DATA_HOME/hull` if `XDG_DATA_HOME` is set
-  2. `/var/lib/hull`
-
-The configuration file loaded is either the path passed via `--config` or
-`{HULL_PATH}/hull.json` (or the default root described above). Use
-`HULL_PATH` to keep Hull data in a custom workspace, or pass `--config` to load
-an explicit JSON file.
-
-## Example usage
-
-1. Start the daemon:
-
-```sh
-sudo hulld
+```bash
+./client/target/debug/hull init
 ```
 
-2. Initialize the Hull project:
+3. Create a switch:
 
-```sh
-hull init
+```bash
+./client/target/debug/hull switch create sw0 10.0.0.0/24
 ```
 
-3. Create a network switch:
+4. Create an interface:
 
-```sh
-hull switch create sw0 10.0.0.0 24
+```bash
+./client/target/debug/hull interface create tap0
 ```
 
-4. Create a network interface:
+5. Add port to switch:
 
-```sh
-hull interface create tap0
-```
-
-5. Add a port to the switch:
-
-```sh
-hull switch port create port0 sw0 tap0
+```bash
+./client/target/debug/hull switch port create port0 sw0 tap0
 ```
 
 6. Create a router:
 
-```sh
-hull router create router0
+```bash
+./client/target/debug/hull router create router0
 ```
 
-7. Attach the switch to the router:
+7. Attach switch to router:
 
-```sh
-hull router attach router0 sw0
+```bash
+./client/target/debug/hull router attach router0 sw0
 ```
 
-Now, every VM connected to `sw0` can communicate with each other and the router.
-You can further configure the router by setting a bridge port name on the link, including the bridge's own port name when you want the bridge-local endpoint.
+## Configuration
 
-# License
+Hull uses environment variables to locate its data directory:
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+- `HULL_PATH` — root directory for Hull data (config, database, socket)
+- `HULL_BRIDGE` — override the OVS bridge name (default: `hull0`)
+- `HULL_SOCKET` — override the daemon socket path
+
+Default paths (when `HULL_PATH` is not set):
+- Data: `$XDG_DATA_HOME/hull` or `/var/lib/hull`
+- Config: `{HULL_PATH}/hull.json`
+
+## CLI
+
+To know more about the CLI commands, run:
+
+```bash
+bash./client/target/debug/hulld --help
+```
+
+or
+
+```bash
+bash./client/target/debug/hull --help
+```
+
+
+## License
+
+MIT License. See [LICENSE](LICENSE) for details.

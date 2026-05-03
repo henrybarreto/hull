@@ -1,4 +1,7 @@
 //! Hull network management library.
+#![allow(missing_docs)]
+#![allow(clippy::unused_self)]
+#![allow(clippy::needless_pass_by_value)]
 
 /// Runtime configuration and path resolution.
 pub mod config;

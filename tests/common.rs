@@ -1,6 +1,7 @@
 //! Shared test harness utilities.
 
 #![allow(dead_code)]
+#![allow(clippy::redundant_clone)]
 
 use std::fmt::Write as FmtWrite;
 use std::fs;
@@ -16,7 +17,6 @@ use hull::interfaces::InterfaceOps;
 use hull::ovs::BridgeClient;
 use hull::routers::RouterOps;
 use hull::switches::SwitchOps;
-use tokio::runtime::Runtime;
 
 fn root_or_panic() {
     let uid = Command::new("id")
@@ -62,7 +62,7 @@ impl TestFlowsHarness {
     ///
     /// # Errors
     /// Returns an error if the temporary directory, database, or OVS bridge cannot be created.
-    pub async fn new(tag: &str) -> Result<Self> {
+    pub fn new(tag: &str) -> Result<Self> {
         root_or_panic();
 
         let suffix: String = (0..4)
@@ -88,9 +88,9 @@ impl TestFlowsHarness {
         db.init()?;
 
         let config_arc = Arc::new(config);
-        let ovs = Arc::new(BridgeClient::connect().await?);
-        let _ = ovs.del_bridge(&bridge).await;
-        ovs.add_bridge(&bridge).await?;
+        let ovs = Arc::new(BridgeClient::connect()?);
+        let _ = ovs.del_bridge(&bridge);
+        ovs.add_bridge(&bridge)?;
 
         let switch_ops = Arc::new(SwitchOps::new(db.clone(), config_arc.clone(), ovs.clone()));
         let interface_ops = Arc::new(InterfaceOps::new(db.clone()));
@@ -237,27 +237,15 @@ impl TestFlowsHarness {
 
 impl Drop for TestFlowsHarness {
     fn drop(&mut self) {
-        let Ok(rt) = Runtime::new() else {
-            let _ = fs::remove_dir_all(&self.root);
-            return;
-        };
-
         let bridge = self.bridge.clone();
         let ovs = self.ovs.clone();
-        rt.block_on(async move {
-            let _ = ovs.del_bridge(&bridge).await;
-        });
+        let _ = ovs.del_bridge(&bridge);
 
-        let Ok(interfaces) = self.db.list_interfaces() else {
-            let _ = fs::remove_dir_all(&self.root);
-            return;
-        };
-
-        rt.block_on(async move {
+        if let Ok(interfaces) = self.db.list_interfaces() {
             for iface in interfaces {
-                let _ = hull::interfaces::Interface::delete(&iface.name).await;
+                let _ = hull::interfaces::Interface::delete(&iface.name);
             }
-        });
+        }
 
         let _ = fs::remove_dir_all(&self.root);
     }
@@ -413,21 +401,14 @@ impl CliTestHarness {
     }
 
     fn cleanup_orphans(&self) {
-        let Ok(rt) = Runtime::new() else {
-            return;
-        };
-
         let bridge = self.bridge.clone();
         let root = self.root.clone();
-        rt.block_on(async move {
-            let Ok(ovs) = BridgeClient::connect().await else {
-                return;
-            };
 
-            let _ = ovs.del_bridge("hull0").await;
-            let _ = ovs.del_bridge(&bridge).await;
-            Self::cleanup_config_bridge(&ovs, root.join("hull.json")).await;
-        });
+        if let Ok(ovs) = BridgeClient::connect() {
+            let _ = ovs.del_bridge("hull0");
+            let _ = ovs.del_bridge(&bridge);
+            Self::cleanup_config_bridge(&ovs, &root.join("hull.json"));
+        }
 
         let output = Command::new("ip")
             .args(["link", "show", &self.iface])
@@ -441,12 +422,12 @@ impl CliTestHarness {
         }
     }
 
-    async fn cleanup_config_bridge(ovs: &BridgeClient, config_path: PathBuf) {
-        let Ok(config) = Config::load(&config_path) else {
+    fn cleanup_config_bridge(ovs: &BridgeClient, config_path: &Path) {
+        let Ok(config) = Config::load(config_path) else {
             return;
         };
 
-        let _ = ovs.del_bridge(&config.bridge_name).await;
+        let _ = ovs.del_bridge(&config.bridge_name);
     }
 }
 

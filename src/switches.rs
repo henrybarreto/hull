@@ -8,8 +8,8 @@ use ipnetwork::IpNetwork;
 use serde_json::json;
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
-use tokio::time::sleep;
 use tracing::{debug, trace};
 
 use crate::openflow::protocol::action::Action;
@@ -51,12 +51,12 @@ impl SwitchOps {
         .with_cookie(cookie)
     }
 
-    async fn wait_for_ofport(&self, interface_name: &str) -> Result<u32> {
+    fn wait_for_ofport(&self, interface_name: &str) -> Result<u32> {
         for _ in 0..50 {
-            if let Some(ofport) = self.ovs.interface_ofport(interface_name).await? {
+            if let Some(ofport) = self.ovs.interface_ofport(interface_name)? {
                 return Ok(ofport);
             }
-            sleep(Duration::from_millis(50)).await;
+            thread::sleep(Duration::from_millis(50));
         }
 
         Err(anyhow!(
@@ -64,19 +64,19 @@ impl SwitchOps {
         ))
     }
 
-    async fn insert_flow(&self, of: &mut of::OF, flow: Rule) -> Result<()> {
-        of.insert(flow).await
+    fn insert_flow(&self, of: &mut of::OF, flow: Rule) -> Result<()> {
+        of.insert(flow)
     }
 
-    async fn remove_flows(&self, of: &mut of::OF, cookie: u64) -> Result<()> {
-        of.remove(Some(cookie)).await
+    fn remove_flows(&self, of: &mut of::OF, cookie: u64) -> Result<()> {
+        of.remove(Some(cookie))
     }
 
     /// Create a switch and apply its flows.
     ///
     /// # Errors
     /// Returns an error if the switch already exists, database updates fail, or flow programming fails.
-    pub async fn create(&self, name: &str, ip: &str, mask: u8) -> Result<()> {
+    pub fn create(&self, name: &str, ip: &str, mask: u8) -> Result<()> {
         debug!(switch = %name, ip = %ip, mask, "creating switch");
         if self.db.get_switch(name).is_ok() {
             return Err(anyhow!("Switch '{name}' already exists"));
@@ -84,14 +84,14 @@ impl SwitchOps {
 
         let switch = self.db.create_switch(name, ip, mask)?;
 
-        self.apply_switch_flows(&self.config, &switch).await?;
+        self.apply_switch_flows(&self.config, &switch)?;
 
         Ok(())
     }
 
     /// # Errors
     /// Returns an error if the switch does not exist, database updates fail, or flow deletion fails.
-    pub async fn remove(&self, name: &str) -> Result<()> {
+    pub fn remove(&self, name: &str) -> Result<()> {
         debug!(switch = %name, "removing switch");
         if self.db.get_switch(name).is_err() {
             return Err(anyhow!("Switch '{name}' does not exist"));
@@ -99,7 +99,7 @@ impl SwitchOps {
 
         let switch = self.db.get_switch(name)?;
 
-        self.delete_switch_flows(&self.config, &switch).await?;
+        self.delete_switch_flows(&self.config, &switch)?;
         self.db.remove_switch(&switch.name)?;
 
         Ok(())
@@ -128,18 +128,13 @@ impl SwitchOps {
     /// # Errors
     /// Returns an error if the port already exists, the switch or interface is missing,
     /// or flow programming fails.
-    pub async fn create_switch_port(
-        &self,
-        name: &str,
-        switch: &str,
-        interface_name: &str,
-    ) -> Result<()> {
+    pub fn create_switch_port(&self, name: &str, switch: &str, interface_name: &str) -> Result<()> {
         debug!(port = %name, switch = %switch, interface = %interface_name, "creating switch port");
         if self.db.get_switch_port(name).is_ok() {
             return Err(anyhow!("Switch port '{name}' already exists"));
         }
 
-        if !Interface::exists(interface_name).await {
+        if !Interface::exists(interface_name) {
             return Err(anyhow!(
                 "Interface '{interface_name}' does not exist on system"
             ));
@@ -156,19 +151,17 @@ impl SwitchOps {
             .db
             .create_switch_port(name, &s.name, &interface.name, &ip)?;
 
-        self.ovs
-            .add_port(
-                &self.config.bridge_name,
-                &port.interface_name,
-                json!({
-                    "hull-switch": switch,
-                    "hull-port": name,
-                }),
-            )
-            .await?;
+        self.ovs.add_port(
+            &self.config.bridge_name,
+            &port.interface_name,
+            json!({
+                "hull-switch": switch,
+                "hull-port": name,
+            }),
+        )?;
 
-        self.delete_switch_flows(&self.config, &s).await?;
-        self.apply_switch_flows(&self.config, &s).await?;
+        self.delete_switch_flows(&self.config, &s)?;
+        self.apply_switch_flows(&self.config, &s)?;
 
         Ok(())
     }
@@ -178,7 +171,7 @@ impl SwitchOps {
     /// # Errors
     /// Returns an error if the switch or port does not exist, database updates fail,
     /// or flow programming fails.
-    pub async fn remove_switch_port(&self, switch: &str, name: &str) -> Result<()> {
+    pub fn remove_switch_port(&self, switch: &str, name: &str) -> Result<()> {
         debug!(port = %name, switch = %switch, "removing switch port");
         if self.db.get_switch(switch).is_err() {
             return Err(anyhow!("Switch '{switch}' does not exist"));
@@ -193,15 +186,14 @@ impl SwitchOps {
         let switch = self.db.get_switch(switch)?;
         let port = self.db.get_switch_port(name)?;
 
-        self.delete_switch_flows(&self.config, &switch).await?;
+        self.delete_switch_flows(&self.config, &switch)?;
 
         let _ = self
             .ovs
-            .del_port(&self.config.bridge_name, &port.interface_name)
-            .await;
+            .del_port(&self.config.bridge_name, &port.interface_name);
 
         self.db.remove_switch_port(&port.name)?;
-        self.apply_switch_flows(&self.config, &switch).await?;
+        self.apply_switch_flows(&self.config, &switch)?;
 
         Ok(())
     }
@@ -263,7 +255,7 @@ impl SwitchOps {
     ///
     /// # Errors
     /// Returns an error if the database query or flow programming fails.
-    pub async fn sync(&self) -> Result<()> {
+    pub fn sync(&self) -> Result<()> {
         debug!("syncing switches from database");
         let switches = self.db.list_switches()?;
         for switch in switches {
@@ -271,20 +263,18 @@ impl SwitchOps {
             let ports = self.db.get_switch_ports_for_switch(&switch.name)?;
             for port in &ports {
                 trace!(switch = %switch.name, port = %port.name, "ensuring switch port is attached");
-                self.ovs
-                    .add_port(
-                        &self.config.bridge_name,
-                        &port.interface_name,
-                        json!({
-                            "hull-switch": switch.name,
-                            "hull-port": port.name,
-                        }),
-                    )
-                    .await?;
+                self.ovs.add_port(
+                    &self.config.bridge_name,
+                    &port.interface_name,
+                    json!({
+                        "hull-switch": switch.name,
+                        "hull-port": port.name,
+                    }),
+                )?;
             }
 
-            self.delete_switch_flows(&self.config, &switch).await?;
-            self.apply_switch_flows(&self.config, &switch).await?;
+            self.delete_switch_flows(&self.config, &switch)?;
+            self.apply_switch_flows(&self.config, &switch)?;
         }
 
         Ok(())
@@ -294,9 +284,9 @@ impl SwitchOps {
     ///
     /// # Errors
     /// Returns an error if flow programming fails or the switch subnet cannot be parsed.
-    pub async fn apply_switch_flows(&self, config: &Config, switch: &Switch) -> Result<()> {
+    pub fn apply_switch_flows(&self, config: &Config, switch: &Switch) -> Result<()> {
         trace!(switch = %switch.name, "applying switch flows");
-        let mut of = of::OF::connect(&config.bridge_name).await?;
+        let mut of = of::OF::connect(&config.bridge_name)?;
         let cookie = Self::switch_cookie(switch)?;
         let ports = self.db.get_switch_ports_for_switch(&switch.name)?;
         let switch_ip = parse_ipv4(&switch.ip)?;
@@ -305,8 +295,7 @@ impl SwitchOps {
         // NOTE: Apply per-port flows before switch-wide drop flows.
         for port in &ports {
             trace!(switch = %switch.name, port = %port.name, "applying port flows");
-            self.apply_switch_port_flows(&mut of, switch, &ports, port, cookie)
-                .await?;
+            self.apply_switch_port_flows(&mut of, switch, &ports, port, cookie)?;
         }
 
         let drop_match = Match::new(vec![
@@ -314,8 +303,7 @@ impl SwitchOps {
             oxm::ipv4_src_masked(switch_ip, switch_mask),
             oxm::ipv4_dst_masked(switch_ip, switch_mask),
         ]);
-        self.insert_flow(&mut of, Self::add_flow(cookie, 235, drop_match, Vec::new()))
-            .await?;
+        self.insert_flow(&mut of, Self::add_flow(cookie, 235, drop_match, Vec::new()))?;
 
         Ok(())
     }
@@ -324,7 +312,7 @@ impl SwitchOps {
     ///
     /// # Errors
     /// Returns an error if flow programming fails or any IP or MAC address is invalid.
-    pub async fn apply_switch_port_flows(
+    pub fn apply_switch_port_flows(
         &self,
         of: &mut of::OF,
         switch: &Switch,
@@ -333,10 +321,10 @@ impl SwitchOps {
         cookie: u64,
     ) -> Result<()> {
         trace!(switch = %switch.name, port = %port.name, "building port flows");
-        let port_ofport = self.wait_for_ofport(&port.interface_name).await?;
+        let port_ofport = self.wait_for_ofport(&port.interface_name)?;
         let mut other_ports = Vec::new();
         for p in ports.iter().filter(|p| p.name != port.name) {
-            let ofport = self.wait_for_ofport(&p.interface_name).await?;
+            let ofport = self.wait_for_ofport(&p.interface_name)?;
             other_ports.push(Action::output(ofport));
         }
         let port_ip = parse_ipv4(&port.ip)?;
@@ -357,8 +345,7 @@ impl SwitchOps {
                 ]),
                 other_ports,
             ),
-        )
-        .await?;
+        )?;
 
         self.insert_flow(
             of,
@@ -373,8 +360,7 @@ impl SwitchOps {
                 ]),
                 Vec::new(),
             ),
-        )
-        .await?;
+        )?;
 
         self.insert_flow(
             of,
@@ -388,8 +374,7 @@ impl SwitchOps {
                 ]),
                 vec![Action::output(port_ofport)],
             ),
-        )
-        .await?;
+        )?;
 
         self.insert_flow(
             of,
@@ -399,8 +384,7 @@ impl SwitchOps {
                 Match::new(vec![oxm::eth_type(ETH_TYPE_ARP), oxm::arp_tpa(port_ip)]),
                 vec![Action::output(port_ofport)],
             ),
-        )
-        .await?;
+        )?;
 
         Ok(())
     }
@@ -409,11 +393,11 @@ impl SwitchOps {
     ///
     /// # Errors
     /// Returns an error if flow deletion fails.
-    pub async fn delete_switch_flows(&self, config: &Config, switch: &Switch) -> Result<()> {
+    pub fn delete_switch_flows(&self, config: &Config, switch: &Switch) -> Result<()> {
         debug!(switch = %switch.name, "deleting switch flows");
-        let mut of = of::OF::connect(&config.bridge_name).await?;
+        let mut of = of::OF::connect(&config.bridge_name)?;
         let cookie = Self::switch_cookie(switch)?;
-        let _ = self.remove_flows(&mut of, cookie).await;
+        let _ = self.remove_flows(&mut of, cookie);
 
         Ok(())
     }

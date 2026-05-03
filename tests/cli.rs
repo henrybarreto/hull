@@ -7,7 +7,6 @@ use std::fs;
 use anyhow::Result;
 use hull::config::Config;
 use hull::interfaces::Interface;
-use tokio::runtime::Runtime;
 
 use common::{CliTestHarness, HullOutputExt};
 
@@ -54,9 +53,8 @@ fn test_startup_reconciles_missing_interfaces() -> Result<()> {
         .status();
     harness.start_daemon()?;
 
-    let rt = Runtime::new()?;
     assert!(
-        rt.block_on(Interface::exists(&harness.iface)),
+        Interface::exists(&harness.iface),
         "expected hulld startup to recreate missing interface"
     );
 

@@ -1,7 +1,3 @@
 NXST_FLOW reply (xid=0x4):
-cookie=<COOKIE>, duration=<DURATION>, table=0, n_packets=<N_PACKETS>, n_bytes=<N_BYTES>, idle_age=<IDLE_AGE>, priority=250, ip=, in_port=<PORT>, nw_src=10.0.0.2, nw_dst=10.0.0.0/24, actions=drop
-cookie=<COOKIE>, duration=<DURATION>, table=0, n_packets=<N_PACKETS>, n_bytes=<N_BYTES>, idle_age=<IDLE_AGE>, priority=245, ip=, in_port=<PORT>, nw_src=10.0.0.0/24, nw_dst=10.0.0.0/24, actions=drop
-cookie=<COOKIE>, duration=<DURATION>, table=0, n_packets=<N_PACKETS>, n_bytes=<N_BYTES>, idle_age=<IDLE_AGE>, priority=240, ip=, dl_dst=<MAC>, nw_dst=10.0.0.2, actions=output:1
-cookie=<COOKIE>, duration=<DURATION>, table=0, n_packets=<N_PACKETS>, n_bytes=<N_BYTES>, idle_age=<IDLE_AGE>, priority=240, arp=, arp_tpa=10.0.0.2, actions=output:1
-cookie=<COOKIE>, duration=<DURATION>, table=0, n_packets=<N_PACKETS>, n_bytes=<N_BYTES>, idle_age=<IDLE_AGE>, priority=235, ip=, nw_src=10.0.0.0/24, nw_dst=10.0.0.0/24, actions=drop
-cookie=<COOKIE>, duration=<DURATION>, table=0, n_packets=<N_PACKETS>, n_bytes=<N_BYTES>, idle_age=<IDLE_AGE>, priority=0, actions=NORMAL
+cookie=0x126c2843ef51b58, duration=<DURATION>, table=0, n_packets=<N_PACKETS>, n_bytes=<N_BYTES>, idle_age=<IDLE_AGE>, priority=235, ip=, nw_src=10.0.0.0/24, nw_dst=10.0.0.0/24, actions=drop
+cookie=0x0, duration=<DURATION>, table=0, n_packets=<N_PACKETS>, n_bytes=<N_BYTES>, idle_age=<IDLE_AGE>, priority=0, actions=NORMAL

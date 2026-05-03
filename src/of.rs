@@ -7,7 +7,7 @@ use crate::openflow::protocol::rule::Rule;
 
 /// Thin wrapper around an `OpenFlow` connection.
 pub struct OF {
-    connection: Connection<tokio::net::UnixStream>,
+    connection: Connection<std::os::unix::net::UnixStream>,
 }
 
 impl OF {
@@ -15,10 +15,10 @@ impl OF {
     ///
     /// # Errors
     /// Returns an error if the bridge connection cannot be established.
-    pub async fn connect(bridge: &str) -> Result<Self> {
+    pub fn connect(bridge: &str) -> Result<Self> {
         debug!(bridge = %bridge, "connecting to openflow");
         Ok(Self {
-            connection: Connection::connect_bridge(bridge).await?,
+            connection: Connection::connect_bridge(bridge)?,
         })
     }
 
@@ -26,9 +26,9 @@ impl OF {
     ///
     /// # Errors
     /// Returns an error if the flow cannot be installed.
-    pub async fn insert(&mut self, flow_mod: Rule) -> Result<()> {
+    pub fn insert(&mut self, flow_mod: Rule) -> Result<()> {
         trace!("inserting openflow rule");
-        self.connection.add_flow(flow_mod).await?;
+        self.connection.add_flow(flow_mod)?;
         Ok(())
     }
 
@@ -36,9 +36,9 @@ impl OF {
     ///
     /// # Errors
     /// Returns an error if the flow deletion fails.
-    pub async fn remove(&mut self, cookie: Option<u64>) -> Result<()> {
+    pub fn remove(&mut self, cookie: Option<u64>) -> Result<()> {
         trace!(cookie = ?cookie, "removing openflow flows");
-        self.connection.delete_flows(cookie).await?;
+        self.connection.delete_flows(cookie)?;
         Ok(())
     }
 }

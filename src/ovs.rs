@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow};
-use ovsdb_client::ops::Ops;
-use ovsdb_client::{Connection, TransactionOutcome};
+use ovsdb::client::ops::Ops;
+use ovsdb::client::{Connection, TransactionOutcome};
+
 use serde_json::{Value, json};
 use tracing::{debug, trace};
 
@@ -14,10 +15,9 @@ impl BridgeClient {
     ///
     /// # Errors
     /// Returns an error if the database socket cannot be opened.
-    pub async fn connect() -> Result<Self> {
+    pub fn connect() -> Result<Self> {
         debug!("connecting to ovsdb");
         let connection = Connection::connect("unix:/var/run/openvswitch/db.sock", None)
-            .await
             .map_err(|e| anyhow!("Failed to connect to OVSDB: {e}"))?;
         Ok(Self { connection })
     }
@@ -26,9 +26,9 @@ impl BridgeClient {
     ///
     /// # Errors
     /// Returns an error if the OVSDB query fails.
-    pub async fn bridge_exists(&self, name: &str) -> Result<bool> {
+    pub fn bridge_exists(&self, name: &str) -> Result<bool> {
         trace!(bridge = %name, "checking bridge existence");
-        let bridges = self.list_bridges().await?;
+        let bridges = self.list_bridges()?;
         Ok(bridges.iter().any(|b| b == name))
     }
 
@@ -36,9 +36,9 @@ impl BridgeClient {
     ///
     /// # Errors
     /// Returns an error if bridge creation fails.
-    pub async fn add_bridge(&self, name: &str) -> Result<()> {
+    pub fn add_bridge(&self, name: &str) -> Result<()> {
         debug!(bridge = %name, "adding bridge");
-        if self.bridge_exists(name).await? {
+        if self.bridge_exists(name)? {
             return Ok(());
         }
 
@@ -82,16 +82,16 @@ impl BridgeClient {
             ),
         ];
 
-        self.transact(ops).await
+        self.transact(ops)
     }
 
     /// Delete a bridge if it exists.
     ///
     /// # Errors
     /// Returns an error if bridge deletion fails.
-    pub async fn del_bridge(&self, name: &str) -> Result<()> {
+    pub fn del_bridge(&self, name: &str) -> Result<()> {
         debug!(bridge = %name, "deleting bridge");
-        let Ok(bridge_uuid) = self.get_bridge_uuid(name).await else {
+        let Ok(bridge_uuid) = self.get_bridge_uuid(name) else {
             return Ok(());
         };
 
@@ -108,21 +108,20 @@ impl BridgeClient {
             Ops::delete("Bridge", &[json!(["name", "==", name])]),
         ];
 
-        self.transact(ops).await
+        self.transact(ops)
     }
 
     /// List all bridge names.
     ///
     /// # Errors
     /// Returns an error if the OVSDB query fails.
-    pub async fn list_bridges(&self) -> Result<Vec<String>> {
+    pub fn list_bridges(&self) -> Result<Vec<String>> {
         trace!("listing bridges");
         let ops = vec![Ops::select("Bridge", &[], Some(&["name".to_string()]))];
 
         let response = self
             .connection
             .transact("Open_vSwitch", ops)
-            .await
             .map_err(|e| anyhow!("OVSDB transaction failed: {e}"))?;
 
         let mut bridges = Vec::new();
@@ -151,7 +150,7 @@ impl BridgeClient {
     ///
     /// # Errors
     /// Returns an error if the OVSDB query fails.
-    pub async fn port_exists(&self, _bridge_name: &str, port_name: &str) -> Result<bool> {
+    pub fn port_exists(&self, _bridge_name: &str, port_name: &str) -> Result<bool> {
         trace!(port = %port_name, "checking port existence");
         let ops = vec![Ops::select(
             "Port",
@@ -162,7 +161,6 @@ impl BridgeClient {
         let response = self
             .connection
             .transact("Open_vSwitch", ops)
-            .await
             .map_err(|e| anyhow!("OVSDB transaction failed: {e}"))?;
 
         if let Some(TransactionOutcome::Select { rows }) = response.entries.first() {
@@ -176,7 +174,7 @@ impl BridgeClient {
     ///
     /// # Errors
     /// Returns an error if the OVSDB query fails.
-    pub async fn interface_ofport(&self, interface_name: &str) -> Result<Option<u32>> {
+    pub fn interface_ofport(&self, interface_name: &str) -> Result<Option<u32>> {
         trace!(interface = %interface_name, "looking up interface ofport");
         let ops = vec![Ops::select(
             "Interface",
@@ -187,7 +185,6 @@ impl BridgeClient {
         let response = self
             .connection
             .transact("Open_vSwitch", ops)
-            .await
             .map_err(|e| anyhow!("OVSDB transaction failed: {e}"))?;
 
         if let Some(TransactionOutcome::Select { rows }) = response.entries.first()
@@ -206,14 +203,9 @@ impl BridgeClient {
     ///
     /// # Errors
     /// Returns an error if port creation fails.
-    pub async fn add_port(
-        &self,
-        bridge_name: &str,
-        port_name: &str,
-        other_config: Value,
-    ) -> Result<()> {
+    pub fn add_port(&self, bridge_name: &str, port_name: &str, other_config: Value) -> Result<()> {
         debug!(bridge = %bridge_name, port = %port_name, "adding port");
-        if self.port_exists(bridge_name, port_name).await? {
+        if self.port_exists(bridge_name, port_name)? {
             // Port exists, maybe update other_config?
             // For now just return Ok to match --may-exist behavior
             return Ok(());
@@ -250,16 +242,16 @@ impl BridgeClient {
             ),
         ];
 
-        self.transact(ops).await
+        self.transact(ops)
     }
 
     /// Delete a port from a bridge.
     ///
     /// # Errors
     /// Returns an error if port deletion fails.
-    pub async fn del_port(&self, bridge_name: &str, port_name: &str) -> Result<()> {
+    pub fn del_port(&self, bridge_name: &str, port_name: &str) -> Result<()> {
         debug!(bridge = %bridge_name, port = %port_name, "deleting port");
-        let Ok(port_uuid) = self.get_port_uuid(port_name).await else {
+        let Ok(port_uuid) = self.get_port_uuid(port_name) else {
             return Ok(());
         };
 
@@ -272,15 +264,14 @@ impl BridgeClient {
             Ops::delete("Port", &[json!(["name", "==", port_name])]),
         ];
 
-        self.transact(ops).await
+        self.transact(ops)
     }
 
-    async fn transact(&self, ops: Vec<Value>) -> Result<()> {
+    fn transact(&self, ops: Vec<Value>) -> Result<()> {
         trace!(ops = ops.len(), "running ovsdb transaction");
         let response = self
             .connection
             .transact("Open_vSwitch", ops)
-            .await
             .map_err(|e| anyhow!("OVSDB transaction failed: {e}"))?;
 
         for entry in response.entries {
@@ -296,7 +287,7 @@ impl BridgeClient {
         Ok(())
     }
 
-    async fn get_bridge_uuid(&self, name: &str) -> Result<String> {
+    fn get_bridge_uuid(&self, name: &str) -> Result<String> {
         trace!(bridge = %name, "looking up bridge uuid");
         let ops = vec![Ops::select(
             "Bridge",
@@ -307,7 +298,6 @@ impl BridgeClient {
         let response = self
             .connection
             .transact("Open_vSwitch", ops)
-            .await
             .map_err(|e| anyhow!("OVSDB transaction failed: {e}"))?;
 
         if let Some(TransactionOutcome::Select { rows }) = response.entries.first()
@@ -322,7 +312,7 @@ impl BridgeClient {
         Err(anyhow!("Bridge '{name}' not found"))
     }
 
-    async fn get_port_uuid(&self, name: &str) -> Result<String> {
+    fn get_port_uuid(&self, name: &str) -> Result<String> {
         trace!(port = %name, "looking up port uuid");
         let ops = vec![Ops::select(
             "Port",
@@ -333,7 +323,6 @@ impl BridgeClient {
         let response = self
             .connection
             .transact("Open_vSwitch", ops)
-            .await
             .map_err(|e| anyhow!("OVSDB transaction failed: {e}"))?;
 
         if let Some(TransactionOutcome::Select { rows }) = response.entries.first()

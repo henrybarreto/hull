@@ -6,57 +6,52 @@ use anyhow::Result;
 
 use common::TestFlowsHarness;
 
-#[tokio::test]
-async fn test_switch_create_flows() -> Result<()> {
-    let harness = TestFlowsHarness::new("switch-create").await?;
-    harness.switch_ops.create("test-sw", "10.0.0.0", 24).await?;
+#[test]
+fn test_switch_create_flows() -> Result<()> {
+    let harness = TestFlowsHarness::new("switch-create")?;
+    harness.switch_ops.create("test-sw", "10.0.0.0", 24)?;
     harness.assert("switch_create")?;
     Ok(())
 }
 
-#[tokio::test]
-async fn test_switch_port_create_flows() -> Result<()> {
-    let harness = TestFlowsHarness::new("switch-port-create").await?;
+#[test]
+fn test_switch_port_create_flows() -> Result<()> {
+    let harness = TestFlowsHarness::new("switch-port-create")?;
     let tap = format!("tap-{}", harness.suffix);
     let port = format!("port-{}", harness.suffix);
 
-    harness.interface_ops.create(&tap, None).await?;
-    harness.switch_ops.create("test-sw", "10.0.0.0", 24).await?;
+    harness.interface_ops.create(&tap, None)?;
+    harness.switch_ops.create("test-sw", "10.0.0.0", 24)?;
     harness
         .switch_ops
-        .create_switch_port(&port, "test-sw", &tap)
-        .await?;
+        .create_switch_port(&port, "test-sw", &tap)?;
 
     harness.assert("switch_port_create")?;
     Ok(())
 }
 
-#[tokio::test]
-async fn test_switch_port_remove_flows() -> Result<()> {
-    let harness = TestFlowsHarness::new("switch-port-remove").await?;
+#[test]
+fn test_switch_port_remove_flows() -> Result<()> {
+    let harness = TestFlowsHarness::new("switch-port-remove")?;
     let tap = format!("tap-{}", harness.suffix);
     let port = format!("port-{}", harness.suffix);
 
-    harness.interface_ops.create(&tap, None).await?;
-    harness.switch_ops.create("test-sw", "10.0.0.0", 24).await?;
+    harness.interface_ops.create(&tap, None)?;
+    harness.switch_ops.create("test-sw", "10.0.0.0", 24)?;
     harness
         .switch_ops
-        .create_switch_port(&port, "test-sw", &tap)
-        .await?;
-    harness
-        .switch_ops
-        .remove_switch_port("test-sw", &port)
-        .await?;
+        .create_switch_port(&port, "test-sw", &tap)?;
+    harness.switch_ops.remove_switch_port("test-sw", &port)?;
 
     harness.assert("switch_port_remove")?;
     Ok(())
 }
 
-#[tokio::test]
-async fn test_switch_remove_flows() -> Result<()> {
-    let harness = TestFlowsHarness::new("switch-remove").await?;
-    harness.switch_ops.create("test-sw", "10.0.0.0", 24).await?;
-    harness.switch_ops.remove("test-sw").await?;
+#[test]
+fn test_switch_remove_flows() -> Result<()> {
+    let harness = TestFlowsHarness::new("switch-remove")?;
+    harness.switch_ops.create("test-sw", "10.0.0.0", 24)?;
+    harness.switch_ops.remove("test-sw")?;
 
     harness.assert("switch_remove")?;
     Ok(())

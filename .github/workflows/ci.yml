@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+env:
+ CARGO_TERM_COLOR: always
+
+jobs:
+  build_and_test:
+    name: Rust project - ${{ matrix.toolchain }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain:
+          - stable
+          - beta
+          - nightly
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install toolchain
+        run: |
+          rustup update ${{ matrix.toolchain }}
+          rustup default ${{ matrix.toolchain }}
+          rustup component add rustfmt clippy
+
+      - name: Check Docker
+        run: docker info
+
+      - name: Format root
+        run: cargo fmt --check
+
+      - name: Format client
+        run: cargo fmt --manifest-path client/Cargo.toml --check
+
+      - name: Format daemon
+        run: cargo fmt --manifest-path daemon/Cargo.toml --check
+
+      - name: Lint root
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Lint client
+        run: cargo clippy --manifest-path client/Cargo.toml --all-targets --all-features -- -D warnings
+
+      - name: Lint daemon
+        run: cargo clippy --manifest-path daemon/Cargo.toml --all-targets --all-features -- -D warnings
