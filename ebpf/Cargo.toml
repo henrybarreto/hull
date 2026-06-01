@@ -1,0 +1,23 @@
+[package]
+name = "ebpf"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "ebpf"
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+aya-ebpf = "0.1"
+aya-ebpf-bindings = "0.1"
+common = { path = "../common" }
+
+[workspace]
+
+[profile.dev]
+opt-level = 3
+panic = "abort"
+
+[profile.release]
+opt-level = 3
+panic = "abort"

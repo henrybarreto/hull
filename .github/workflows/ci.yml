@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+env:
+ CARGO_TERM_COLOR: always
+
+jobs:
+  build_and_test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install toolchain
+        run: |
+          rustup component add rustfmt clippy
+
+      - name: Check Docker
+        run: docker info
+
+      - name: Format root
+        run: cargo fmt --check
+
+      - name: Format client
+        run: cargo fmt --manifest-path client/Cargo.toml --check
+
+      - name: Format daemon
+        run: cargo fmt --manifest-path daemon/Cargo.toml --check
+
+      - name: Lint root
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Lint client
+        run: cargo clippy --manifest-path client/Cargo.toml --all-targets --all-features -- -D warnings
+
+      - name: Lint daemon
+        run: HULL_SKIP_EBPF_BUILD=1 cargo clippy --manifest-path daemon/Cargo.toml --all-targets --all-features -- -D warnings
