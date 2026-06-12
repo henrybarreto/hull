@@ -3,8 +3,5 @@ name = "common"
 version = "0.1.0"
 edition = "2021"
 
-[dependencies]
-serde = { version = "1", features = ["derive"], default-features = false }
-
 [target.'cfg(not(target_arch = "bpf"))'.dependencies]
-aya = { version = "0.13", features = ["async_tokio"] }
+aya = "0.13"

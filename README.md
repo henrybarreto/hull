@@ -57,16 +57,15 @@ Optional static addressing:
 
 Unknown L2 destinations are not flooded; forwarding only uses known MAC/router state.
 
-## Configuration
+## Paths
 
-Hull uses environment variables to locate its data directory:
+Hull uses environment variables to locate runtime state:
 
-- `HULL_PATH` — root directory for Hull data (config, database, socket)
+- `HULL_PATH` — root directory for the database and socket
 - `HULL_SOCKET` — override the daemon socket path
 
 Default paths (when `HULL_PATH` is not set):
 - Data: `$XDG_DATA_HOME/hull` or `/var/lib/hull`
-- Config: `{HULL_PATH}/hull.json`
 
 ## CLI
 

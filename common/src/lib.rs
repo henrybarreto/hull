@@ -4,28 +4,6 @@
 use aya::Pod;
 
 #[repr(C)]
-pub struct IpPrefix {
-    pub prefix_len: u32,
-    pub data: [u8; 4],
-}
-
-impl IpPrefix {
-    pub fn new(ip: u32, prefix_len: u8) -> Self {
-        Self {
-            prefix_len: prefix_len as u32,
-            data: ip.to_be_bytes(),
-        }
-    }
-}
-
-impl Copy for IpPrefix {}
-impl Clone for IpPrefix {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-#[repr(C)]
 pub struct RouteEntry {
     pub out_ifindex: u32,
     pub src_prefix_len: u32,
@@ -77,6 +55,3 @@ unsafe impl Pod for Interface {}
 
 #[cfg(not(target_arch = "bpf"))]
 unsafe impl Pod for ArpKey {}
-
-#[cfg(not(target_arch = "bpf"))]
-unsafe impl Pod for IpPrefix {}

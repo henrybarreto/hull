@@ -1,13 +1,7 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-
 /// A client request sent to the daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
-    /// Optional override for the configuration file path.
-    pub config: Option<PathBuf>,
-    /// Optional bridge name override used by the daemon.
-    pub bridge_name: Option<String>,
     /// The requested operation.
     pub command: Command,
 }

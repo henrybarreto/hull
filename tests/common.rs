@@ -32,8 +32,6 @@ const DAEMON_MANIFEST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/daemon/Cargo
 pub struct CliTestHarness {
     /// Temporary root directory for the harness.
     pub root: PathBuf,
-    /// Bridge name under test.
-    pub bridge: String,
     /// Temporary switch port/TAP name.
     pub port: String,
     /// Temporary switch name.
@@ -75,16 +73,14 @@ impl CliTestHarness {
                 (b'a' + c) as char
             })
             .collect();
-        let bridge = format!("ht-{suffix}");
         let root = PathBuf::from(format!("/tmp/hull-cli-{suffix}"));
         let _ = fs::remove_dir_all(&root);
 
         fs::create_dir_all(&root)?;
 
-        let daemon = Self::spawn_daemon(&root, &bridge)?;
+        let daemon = Self::spawn_daemon(&root)?;
         let harness = Self {
             root,
-            bridge,
             port: format!("swp-{suffix}"),
             switch: format!("sw-{suffix}"),
             daemon,
@@ -94,7 +90,7 @@ impl CliTestHarness {
         Ok(harness)
     }
 
-    fn spawn_daemon(root: &Path, bridge: &str) -> Result<Child> {
+    fn spawn_daemon(root: &Path) -> Result<Child> {
         let daemon_bin = Self::binary_path(DAEMON_MANIFEST, "hulld")?;
 
         Ok(Command::new(daemon_bin)
@@ -103,7 +99,6 @@ impl CliTestHarness {
             .arg("--log-file")
             .arg(root.join("hulld.log"))
             .env("HULL_PATH", root)
-            .env("HULL_BRIDGE", bridge)
             .spawn()?)
     }
 
@@ -121,25 +116,16 @@ impl CliTestHarness {
         ))
     }
 
-    /// Run `hull` with the harness bridge.
+    /// Run `hull` with the harness root.
     ///
     /// # Errors
     /// Returns an error if the `hull` process cannot be executed.
     pub fn run(&self, args: &[&str]) -> Result<std::process::Output> {
-        self.run_with_bridge(&self.bridge, args)
-    }
-
-    /// Run `hull` with a custom bridge override.
-    ///
-    /// # Errors
-    /// Returns an error if the `hull` process cannot be executed.
-    pub fn run_with_bridge(&self, bridge: &str, args: &[&str]) -> Result<std::process::Output> {
         let hull_bin = Self::binary_path(CLIENT_MANIFEST, "hull")?;
 
         Ok(Command::new(hull_bin)
             .args(args)
             .env("HULL_PATH", &self.root)
-            .env("HULL_BRIDGE", bridge)
             .output()?)
     }
 
@@ -157,7 +143,7 @@ impl CliTestHarness {
         let socket_path = self.root.join("hulld.sock");
         let _ = fs::remove_file(&socket_path);
 
-        self.daemon = Self::spawn_daemon(&self.root, &self.bridge)?;
+        self.daemon = Self::spawn_daemon(&self.root)?;
         Self::wait_for_socket(&socket_path)?;
         Ok(())
     }

@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow};
 use aya::include_bytes_aligned;
 use clap::{Arg, Command};
-use hull::config::{Config, get_config_path, get_db_path, get_root_path, get_socket_path};
+use hull::cidr::Ipv4Network;
 use hull::database::Database;
 use hull::ebpf::BridgePlane;
 use hull::protocol::{
@@ -9,6 +9,7 @@ use hull::protocol::{
     SwitchPortCommand, error_response,
 };
 use hull::switches::SwitchRouterOps;
+use hull::{get_db_path, get_root_path, get_socket_path};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::net::Shutdown;
@@ -34,16 +35,14 @@ struct State {
 impl State {
     fn new(root_path: &Path) -> Result<Self> {
         let db_path = get_db_path(root_path);
-        let config_path = get_config_path(root_path, None);
         if !db_path.exists() {
             return Err(anyhow!(
                 "Hull is not initialized. Please run 'hull init' first."
             ));
         }
         let storage = Arc::new(Database::new(db_path));
-        let config = Arc::new(Config::load(&config_path)?);
         let plane = Arc::new(load_plane()?);
-        let switch_router_ops = SwitchRouterOps::new(storage.clone(), config, plane);
+        let switch_router_ops = SwitchRouterOps::new(storage.clone(), plane);
         Ok(Self {
             storage,
             switch_router_ops,
@@ -215,18 +214,17 @@ fn handle_connection(mut stream: UnixStream, state: Arc<Mutex<Option<State>>>) -
 
 fn handle_request(request: Request, state: Arc<Mutex<Option<State>>>) -> Result<serde_json::Value> {
     let root_path = get_root_path();
-    let config_path = get_config_path(&root_path, request.config.clone());
     let db_path = get_db_path(&root_path);
 
     match request.command {
         HullCommand::Init => {
-            let response = handle_init(root_path.clone(), config_path, db_path)?;
+            let response = handle_init(root_path.clone(), db_path)?;
             let mut guard = state.lock().map_err(|_| anyhow!("state lock poisoned"))?;
             *guard = Some(State::new(&root_path)?);
             Ok(response)
         }
         HullCommand::Deinit => {
-            let response = handle_deinit(config_path, db_path)?;
+            let response = handle_deinit(db_path)?;
             let mut guard = state.lock().map_err(|_| anyhow!("state lock poisoned"))?;
             *guard = None;
             Ok(response)
@@ -250,19 +248,12 @@ fn handle_request(request: Request, state: Arc<Mutex<Option<State>>>) -> Result<
     }
 }
 
-fn handle_init(
-    root_path: PathBuf,
-    config_path: PathBuf,
-    db_path: PathBuf,
-) -> Result<serde_json::Value> {
+fn handle_init(root_path: PathBuf, db_path: PathBuf) -> Result<serde_json::Value> {
     if root_path.exists() && db_path.exists() {
         return Err(anyhow!("Hull already initialized"));
     }
 
     fs::create_dir_all(&root_path)?;
-    let config = Config::default();
-    config.save(&config_path)?;
-
     let db = Database::new(db_path);
     db.reset_schema()?;
     db.init()?;
@@ -270,11 +261,10 @@ fn handle_init(
     Ok(serde_json::json!({"status":"success","message":"Hull initialized"}))
 }
 
-fn handle_deinit(config_path: PathBuf, db_path: PathBuf) -> Result<serde_json::Value> {
+fn handle_deinit(db_path: PathBuf) -> Result<serde_json::Value> {
     let db = Database::new(db_path.clone());
     let _ = db.reset_schema();
     let _ = fs::remove_file(db_path);
-    let _ = fs::remove_file(config_path);
     Ok(serde_json::json!({"status":"success","message":"Hull deinitialized"}))
 }
 
@@ -575,21 +565,13 @@ fn validate_router_attach_no_cidr_conflict(
     Ok(())
 }
 
-fn parse_ipnetwork(cidr: &str) -> Result<ipnetwork::IpNetwork> {
-    cidr.parse::<ipnetwork::IpNetwork>()
+fn parse_ipnetwork(cidr: &str) -> Result<Ipv4Network> {
+    cidr.parse::<Ipv4Network>()
         .map_err(|e| anyhow!("invalid cidr '{cidr}': {e}"))
 }
 
-fn cidr_overlap(a: &ipnetwork::IpNetwork, b: &ipnetwork::IpNetwork) -> bool {
-    match (a, b) {
-        (ipnetwork::IpNetwork::V4(a4), ipnetwork::IpNetwork::V4(b4)) => {
-            a4.contains(b4.network()) || b4.contains(a4.network())
-        }
-        (ipnetwork::IpNetwork::V6(a6), ipnetwork::IpNetwork::V6(b6)) => {
-            a6.contains(b6.network()) || b6.contains(a6.network())
-        }
-        _ => false,
-    }
+fn cidr_overlap(a: &Ipv4Network, b: &Ipv4Network) -> bool {
+    a.overlaps(*b)
 }
 
 fn split_cidr(cidr: &str) -> Result<(String, u8)> {

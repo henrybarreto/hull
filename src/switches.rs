@@ -1,23 +1,20 @@
-use crate::config::Config;
+use crate::cidr::Ipv4Network;
 use crate::database::{Database, RouterRoute, Subnet, Switch, SwitchPort, ensure_mac_or_generate};
 use crate::ebpf::BridgePlane;
 use crate::interfaces::Interface;
 use anyhow::{Result, anyhow};
-use ipnetwork::IpNetwork;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct SwitchRouterOps {
     db: Arc<Database>,
-    #[allow(dead_code)]
-    config: Arc<Config>,
     plane: Arc<BridgePlane>,
 }
 
 impl SwitchRouterOps {
-    pub const fn new(db: Arc<Database>, config: Arc<Config>, plane: Arc<BridgePlane>) -> Self {
-        Self { db, config, plane }
+    pub const fn new(db: Arc<Database>, plane: Arc<BridgePlane>) -> Self {
+        Self { db, plane }
     }
 
     pub fn create_switch(&self, name: &str) -> Result<Switch> {
@@ -47,10 +44,6 @@ impl SwitchRouterOps {
         let gateway_mac = ensure_mac_or_generate(gateway_mac);
         self.db
             .create_subnet(switch, name, cidr, &gateway_ip, &gateway_mac)
-    }
-
-    pub fn remove_subnet(&self, switch: &str, name: &str) -> Result<()> {
-        self.db.remove_subnet(switch, name)
     }
 
     pub fn list_subnets(&self, switch: &str) -> Result<Vec<Subnet>> {
@@ -136,10 +129,10 @@ impl SwitchRouterOps {
                         ep.name
                     )
                 })?;
-                self.plane
-                    .set_bridge_member(ifindex, bridge_id(&ep.switch_uuid, &subnet.uuid))?;
+                let bridge_id = bridge_id(&ep.switch_uuid, &subnet.uuid);
+                self.plane.set_bridge_member(ifindex, bridge_id)?;
                 self.plane.register_arp_entry(
-                    bridge_id(&ep.switch_uuid, &subnet.uuid),
+                    bridge_id,
                     u32::from_be_bytes(parse_ipv4(&ep.ip)?),
                     parse_mac(&ep.mac)?,
                 )?;
@@ -149,6 +142,8 @@ impl SwitchRouterOps {
                 {
                     let gw_ip = parse_ipv4(&subnet.gateway_ip)?;
                     let gw_mac = parse_mac(&subnet.gateway_mac)?;
+                    self.plane
+                        .register_arp_entry(bridge_id, u32::from_be_bytes(gw_ip), gw_mac)?;
                     self.plane
                         .register_gateway(ifindex, u32::from_be_bytes(gw_ip), gw_mac)?;
                 }
@@ -202,10 +197,10 @@ impl SwitchRouterOps {
         let source = parse_cidr_v4(&route.source)?;
         let destination = parse_cidr_v4(&route.destination)?;
         let next_hop = parse_ipv4(next_hop_ip)?;
-        let next_hop_addr = std::net::IpAddr::V4(std::net::Ipv4Addr::from(next_hop));
+        let next_hop_addr = std::net::Ipv4Addr::from(next_hop);
         let next_hop_mac = parse_mac(next_hop_mac)?;
 
-        let mut ingress_ifindexes = Vec::new();
+        let mut has_ingress = false;
         let mut egress = None::<(u32, [u8; 6])>;
 
         for port in switch_ports {
@@ -226,10 +221,10 @@ impl SwitchRouterOps {
             };
 
             if source.contains(port_ip) {
-                ingress_ifindexes.push(ifindex);
+                has_ingress = true;
             }
 
-            let Ok(subnet_cidr) = subnet.cidr.parse::<IpNetwork>() else {
+            let Ok(subnet_cidr) = subnet.cidr.parse::<Ipv4Network>() else {
                 continue;
             };
             if subnet_cidr.contains(next_hop_addr) {
@@ -240,27 +235,23 @@ impl SwitchRouterOps {
         let Some((egress_ifindex, src_mac)) = egress else {
             return Ok(());
         };
-        if ingress_ifindexes.is_empty() {
+        if !has_ingress {
             return Ok(());
         }
 
-        for _ingress_ifindex in ingress_ifindexes {
-            self.plane.add_route(
-                source.network().octets(),
-                u32::from(source.prefix()),
-                destination.network().octets(),
-                u32::from(destination.prefix()),
-                egress_ifindex,
-                next_hop_mac,
-                src_mac,
-                route
-                    .metric
-                    .try_into()
-                    .map_err(|_| anyhow!("route metric '{}' exceeds u8 range", route.metric))?,
-            )?;
-        }
-
-        Ok(())
+        self.plane.add_route(
+            source.network().octets(),
+            u32::from(source.prefix()),
+            destination.network().octets(),
+            u32::from(destination.prefix()),
+            egress_ifindex,
+            next_hop_mac,
+            src_mac,
+            route
+                .metric
+                .try_into()
+                .map_err(|_| anyhow!("route metric '{}' exceeds u8 range", route.metric))?,
+        )
     }
 }
 
@@ -300,31 +291,23 @@ fn parse_ipv4(ip: &str) -> Result<[u8; 4]> {
         .map_err(|e| anyhow!("invalid ipv4 '{ip}': {e}"))
 }
 
-fn parse_cidr_v4(cidr: &str) -> Result<ipnetwork::Ipv4Network> {
-    let network: IpNetwork = cidr
-        .parse()
-        .map_err(|e| anyhow!("invalid cidr '{cidr}': {e}"))?;
-    let IpNetwork::V4(v4) = network else {
-        return Err(anyhow!("only IPv4 CIDR is supported: '{cidr}'"));
-    };
-    Ok(v4)
+fn parse_cidr_v4(cidr: &str) -> Result<Ipv4Network> {
+    cidr.parse()
+        .map_err(|e| anyhow!("invalid cidr '{cidr}': {e}"))
 }
 
 fn default_gateway_ip_from_cidr(cidr: &str) -> Result<String> {
-    let network: IpNetwork = cidr
+    let network: Ipv4Network = cidr
         .parse()
         .map_err(|e| anyhow!("invalid cidr '{cidr}': {e}"))?;
-    let IpNetwork::V4(v4) = network else {
-        return Err(anyhow!("only IPv4 CIDR is supported for subnet gateway"));
-    };
 
-    let prefix = v4.prefix();
+    let prefix = network.prefix();
     if prefix >= 31 {
         return Err(anyhow!(
             "cannot auto-select gateway for cidr '{cidr}': no usable host addresses"
         ));
     }
 
-    let gw = u32::from(v4.network()).wrapping_add(1);
+    let gw = u32::from(network.network()).wrapping_add(1);
     Ok(std::net::Ipv4Addr::from(gw).to_string())
 }

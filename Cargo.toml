@@ -16,17 +16,13 @@ authors = ["Henry Barreto <me@henrybarreto.dev>"]
 
 [dependencies]
 anyhow = "1"
-aya = { version = "0.13", features = ["async_tokio"] }
+aya = "0.13"
 common = { path = "./common" }
-libc = "0.2"
 rusqlite = { version = "0.31", features = ["bundled"] }
-rtnetlink = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt", "net", "io-util", "macros"] }
 tracing = "0.1"
-uuid = { version = "1", features = ["v4", "v5", "serde"] }
-ipnetwork = "0.20.0"
+uuid = { version = "1", features = ["v5", "serde"] }
 rand = "0.8"
 
 [dev-dependencies]

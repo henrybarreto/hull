@@ -1,17 +1,14 @@
 use anyhow::{Context, Result, anyhow};
 use clap::{Arg, ArgAction, Command as ClapCommand};
-use hull::config::{Config, get_root_path, get_socket_path};
 use hull::protocol::{
     Command, Request, RouterCommand, RouterRouteCommand, SwitchCommand, SwitchPortCommand,
     error_response,
 };
+use hull::{get_root_path, get_socket_path};
 use serde_json::Value;
 use std::io::{self, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
-use tracing::{debug, trace};
-use tracing_subscriber::filter::LevelFilter;
 
 fn main() {
     run();
@@ -19,25 +16,13 @@ fn main() {
 
 /// Run the Hull CLI.
 pub fn run() {
-    init_logging();
     if let Err(e) = run_inner() {
         let _ = output(&error_response(format!("{e:#}")));
         std::process::exit(1);
     }
 }
 
-fn init_logging() {
-    let subscriber = tracing_subscriber::fmt()
-        .with_timer(tracing_subscriber::fmt::time::SystemTime)
-        .with_target(false)
-        .with_max_level(LevelFilter::OFF)
-        .with_writer(std::io::stderr)
-        .finish();
-    let _ = tracing::subscriber::set_global_default(subscriber);
-}
-
 fn run_inner() -> Result<()> {
-    debug!("starting hull client");
     let mut cli = build_cli();
     let matches = cli.clone().get_matches();
 
@@ -65,36 +50,22 @@ pub fn build_cli() -> ClapCommand {
     ClapCommand::new("hull")
         .version("0.1.0")
         .author("Henry Barreto <me@henrybarreto.dev>")
-        .about("Simple and lean ovs network mangement")
+        .about("Single-node eBPF network controller")
         .arg_required_else_help(true)
-        .arg(config_arg())
         .subcommand(ClapCommand::new("init").about("Initialize hull project"))
         .subcommand(ClapCommand::new("deinit").about("Deinitialize hull and remove all data"))
         .subcommand(switch_subcommand())
         .subcommand(router_subcommand())
-        .subcommand(
-            ClapCommand::new("sync").about("Remove all OVS flows and re-apply from database state"),
-        )
+        .subcommand(ClapCommand::new("sync").about("Re-apply dataplane state from the database"))
 }
 
 fn request_from_matches(matches: &clap::ArgMatches) -> Result<Request> {
-    let config = matches.get_one::<PathBuf>("config").cloned();
-    let command = command_from_matches(matches)?;
-
-    let bridge_name = matches
-        .subcommand_name()
-        .filter(|name| *name == "init")
-        .map(|_| Config::default().bridge_name);
-
     Ok(Request {
-        config,
-        bridge_name,
-        command,
+        command: command_from_matches(matches)?,
     })
 }
 
 fn command_from_matches(matches: &clap::ArgMatches) -> Result<Command> {
-    trace!("resolving cli command");
     match matches.subcommand() {
         Some(("init", _)) => Ok(Command::Init),
         Some(("deinit", _)) => Ok(Command::Deinit),
@@ -106,7 +77,6 @@ fn command_from_matches(matches: &clap::ArgMatches) -> Result<Command> {
 }
 
 fn switch_command_from_matches(sub_m: &clap::ArgMatches) -> Result<Command> {
-    trace!("resolving switch subcommand");
     match sub_m.subcommand() {
         Some(("ls", _)) => Ok(Command::Switch(SwitchCommand::Ls)),
         Some(("create", m)) => Ok(Command::Switch(SwitchCommand::Create {
@@ -146,7 +116,6 @@ fn switch_command_from_matches(sub_m: &clap::ArgMatches) -> Result<Command> {
 }
 
 fn router_command_from_matches(sub_m: &clap::ArgMatches) -> Result<Command> {
-    trace!("resolving router subcommand");
     match sub_m.subcommand() {
         Some(("ls", _)) => Ok(Command::Router(RouterCommand::Ls)),
         Some(("show", m)) => Ok(Command::Router(RouterCommand::Show {
@@ -174,7 +143,6 @@ fn router_command_from_matches(sub_m: &clap::ArgMatches) -> Result<Command> {
 }
 
 fn router_route_command_from_matches(route_m: &clap::ArgMatches) -> Result<Command> {
-    trace!("resolving router route subcommand");
     match route_m.subcommand() {
         Some(("add", m)) => {
             let route_tail: Vec<String> = m
@@ -213,7 +181,6 @@ fn router_route_command_from_matches(route_m: &clap::ArgMatches) -> Result<Comma
 }
 
 fn parse_route_tail(route_tail: &[String]) -> Result<(Option<String>, Option<String>, u32)> {
-    trace!(items = route_tail.len(), "parsing route tail");
     match route_tail {
         [] => Ok((None, None, 0)),
         [metric] => Ok((
@@ -238,7 +205,6 @@ fn parse_route_tail(route_tail: &[String]) -> Result<(Option<String>, Option<Str
 }
 
 fn required_string(m: &clap::ArgMatches, key: &str, msg: &str) -> Result<String> {
-    trace!(key = %key, "reading required cli arg");
     m.get_one::<String>(key)
         .cloned()
         .ok_or_else(|| anyhow!("{msg}"))
@@ -247,21 +213,17 @@ fn required_string(m: &clap::ArgMatches, key: &str, msg: &str) -> Result<String>
 fn send_request(request: &Request) -> Result<Value> {
     let root_path = get_root_path();
     let socket_path = get_socket_path(&root_path);
-    trace!(socket_path = %socket_path.display(), "connecting to daemon");
     let mut stream = UnixStream::connect(&socket_path)
         .with_context(|| format!("failed to connect to hulld at '{}'", socket_path.display()))?;
 
-    trace!("sending request to daemon");
     serde_json::to_writer(&mut stream, request)?;
     stream.shutdown(Shutdown::Write)?;
 
-    trace!("waiting for daemon response");
     let response = serde_json::from_reader(stream)?;
     Ok(response)
 }
 
 fn is_error_response(value: &Value) -> bool {
-    trace!("checking cli response status");
     value
         .get("status")
         .and_then(Value::as_str)
@@ -269,19 +231,9 @@ fn is_error_response(value: &Value) -> bool {
 }
 
 fn output(value: &Value) -> Result<()> {
-    trace!("writing cli output");
     let mut stdout = io::stdout().lock();
     writeln!(stdout, "{}", serde_json::to_string_pretty(value)?)?;
     Ok(())
-}
-
-fn config_arg() -> Arg {
-    Arg::new("config")
-        .short('c')
-        .long("config")
-        .value_name("FILE")
-        .help("Sets a custom config file")
-        .value_parser(clap::value_parser!(std::path::PathBuf))
 }
 
 fn switch_subcommand() -> ClapCommand {

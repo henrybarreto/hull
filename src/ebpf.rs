@@ -2,7 +2,6 @@ use anyhow::{Result, anyhow};
 use aya::Ebpf;
 use aya::maps::{
     MapData,
-    array::ProgramArray,
     hash_map::HashMap as AyaHashMap,
     lpm_trie::{Key as LpmKey, LpmTrie as AyaLpmTrie},
 };
@@ -15,8 +14,7 @@ use std::collections::HashSet;
 use std::sync::{Mutex, MutexGuard};
 use tracing::{debug, trace};
 
-const TAIL_SWITCH: u32 = 1;
-const TAIL_ROUTER: u32 = 2;
+const INGRESS_PROGRAM: &str = "hull_ingress";
 
 fn is_eexist_error(message: &str) -> bool {
     message.contains("File exists")
@@ -41,39 +39,9 @@ fn load_classifier(ebpf: &mut Ebpf, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn load_tail_call_programs(ebpf: &mut Ebpf) -> Result<()> {
-    load_classifier(ebpf, "hull_ingress")?;
-    load_classifier(ebpf, "hull_switch")?;
-    load_classifier(ebpf, "hull_router")?;
-    Ok(())
-}
-
-fn configure_tail_calls(ebpf: &mut Ebpf) -> Result<()> {
-    let mut jump_table: ProgramArray<MapData> = ProgramArray::try_from(
-        ebpf.take_map("JUMP_TABLE")
-            .ok_or_else(|| anyhow!("JUMP_TABLE map not found"))?,
-    )?;
-
-    let switch_fd = ebpf
-        .program("hull_switch")
-        .ok_or_else(|| anyhow!("hull_switch program not found"))?
-        .fd()?;
-    jump_table.set(TAIL_SWITCH, switch_fd, 0)?;
-
-    let router_fd = ebpf
-        .program("hull_router")
-        .ok_or_else(|| anyhow!("hull_router program not found"))?
-        .fd()?;
-    jump_table.set(TAIL_ROUTER, router_fd, 0)?;
-
-    // The program array can be dropped after being populated; loaded programs keep
-    // their map references alive in the kernel.
-    Ok(())
-}
-
 fn retry_attach_ingress(program: &mut SchedClassifier, iface: &str) -> Result<()> {
     debug!(interface = %iface, "ingress already attached, replacing");
-    let _ = aya::programs::tc::qdisc_detach_program(iface, TcAttachType::Ingress, "hull_ingress");
+    let _ = aya::programs::tc::qdisc_detach_program(iface, TcAttachType::Ingress, INGRESS_PROGRAM);
 
     let retry_options = TcAttachOptions::Netlink(NlOptions::default());
     if let Err(e) = program.attach_with_options(iface, TcAttachType::Ingress, retry_options) {
@@ -107,8 +75,7 @@ impl BridgePlane {
 
     pub fn load(data: &[u8]) -> Result<Self> {
         let mut ebpf = Ebpf::load(data)?;
-        load_tail_call_programs(&mut ebpf)?;
-        configure_tail_calls(&mut ebpf)?;
+        load_classifier(&mut ebpf, INGRESS_PROGRAM)?;
 
         Ok(Self {
             ebpf: Mutex::new(ebpf),
@@ -137,23 +104,23 @@ impl BridgePlane {
             Err(e) => return Err(e.into()),
         }
 
-        let hull_ingress: &mut SchedClassifier = ebpf
-            .program_mut("hull_ingress")
-            .ok_or_else(|| anyhow!("hull_ingress program not found"))?
+        let ingress: &mut SchedClassifier = ebpf
+            .program_mut(INGRESS_PROGRAM)
+            .ok_or_else(|| anyhow!("{INGRESS_PROGRAM} program not found"))?
             .try_into()?;
-        if let Err(e) = hull_ingress.load()
+        if let Err(e) = ingress.load()
             && !is_already_loaded_error(&e.to_string())
         {
-            return Err(anyhow!("failed to load program 'hull_ingress': {e}"));
+            return Err(anyhow!("failed to load program '{INGRESS_PROGRAM}': {e}"));
         }
 
         let _ =
-            aya::programs::tc::qdisc_detach_program(iface, TcAttachType::Ingress, "hull_ingress");
+            aya::programs::tc::qdisc_detach_program(iface, TcAttachType::Ingress, INGRESS_PROGRAM);
         let options = TcAttachOptions::Netlink(NlOptions::default());
-        match hull_ingress.attach_with_options(iface, TcAttachType::Ingress, options) {
+        match ingress.attach_with_options(iface, TcAttachType::Ingress, options) {
             Ok(_) => {}
             Err(e) if is_eexist_error(&e.to_string()) => {
-                retry_attach_ingress(hull_ingress, iface)?;
+                retry_attach_ingress(ingress, iface)?;
                 return Ok(());
             }
             Err(e) => return Err(e.into()),
@@ -166,7 +133,7 @@ impl BridgePlane {
     pub fn detach_tap(&self, iface: &str) -> Result<()> {
         debug!(interface = %iface, "detaching eBPF TC programs");
         let _ =
-            aya::programs::tc::qdisc_detach_program(iface, TcAttachType::Ingress, "hull_ingress");
+            aya::programs::tc::qdisc_detach_program(iface, TcAttachType::Ingress, INGRESS_PROGRAM);
         self.lock_attached_ifaces()?.remove(iface);
         Ok(())
     }
@@ -236,39 +203,6 @@ impl BridgePlane {
         Ok(())
     }
 
-    pub fn add_default_route(
-        &self,
-        in_ifindex: u32,
-        src_ip: [u8; 4],
-        src_prefix_len: u32,
-        out_ifindex: u32,
-        next_hop_mac: [u8; 6],
-        src_mac: [u8; 6],
-        flags: u8,
-    ) -> Result<()> {
-        trace!(in_ifindex, out_ifindex, "adding default route");
-        let mut ebpf = self.lock_ebpf()?;
-
-        let default_routes = ebpf
-            .map_mut("DEFAULT_ROUTES")
-            .ok_or_else(|| anyhow!("DEFAULT_ROUTES map not found"))?;
-        let mut routes: AyaHashMap<&mut MapData, u32, RouteEntry> =
-            AyaHashMap::try_from(default_routes)?;
-
-        let value = RouteEntry {
-            out_ifindex,
-            src_prefix_len,
-            src_network: u32::from_be_bytes(src_ip),
-            next_hop_mac,
-            src_mac,
-            flags,
-            _pad: [0u8; 3],
-        };
-
-        routes.insert(in_ifindex, value, 0)?;
-        Ok(())
-    }
-
     pub fn clear_routes(&self) -> Result<()> {
         debug!("clearing eBPF route table");
         let mut ebpf = self.lock_ebpf()?;
@@ -286,17 +220,6 @@ impl BridgePlane {
             let _ = rt.remove(&key);
         }
 
-        if let Some(default_routes) = ebpf.map_mut("DEFAULT_ROUTES") {
-            let mut routes: AyaHashMap<&mut MapData, u32, RouteEntry> =
-                AyaHashMap::try_from(default_routes)?;
-            let keys: Vec<_> = routes
-                .iter()
-                .filter_map(|item| item.ok().map(|(key, _)| key))
-                .collect();
-            for key in keys {
-                let _ = routes.remove(&key);
-            }
-        }
         Ok(())
     }
 

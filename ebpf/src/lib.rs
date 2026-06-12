@@ -4,14 +4,11 @@
 use aya_ebpf::{
     bindings::{TC_ACT_PIPE, TC_ACT_SHOT},
     macros::{classifier, map},
-    maps::{HashMap, LpmTrie, ProgramArray, lpm_trie::Key},
+    maps::{lpm_trie::Key, HashMap, LpmTrie},
     programs::TcContext,
 };
 use aya_ebpf_bindings::helpers::bpf_redirect;
 use common::{ArpKey, Interface, RouteEntry};
-
-#[map]
-static JUMP_TABLE: ProgramArray = ProgramArray::with_max_entries(8, 0);
 
 #[map]
 static MAC_TABLE: HashMap<[u8; 6], u32> = HashMap::with_max_entries(4096, 0);
@@ -23,16 +20,10 @@ static BRIDGE_TABLE: HashMap<u32, u32> = HashMap::with_max_entries(256, 0);
 static ROUTE_TABLE: LpmTrie<[u8; 4], RouteEntry> = LpmTrie::with_max_entries(1024, 0);
 
 #[map]
-static DEFAULT_ROUTES: HashMap<u32, RouteEntry> = HashMap::with_max_entries(256, 0);
-
-#[map]
 static INTERFACES: HashMap<u32, Interface> = HashMap::with_max_entries(64, 0);
 
 #[map]
 static ARP_TABLE: HashMap<ArpKey, [u8; 6]> = HashMap::with_max_entries(4096, 0);
-
-const TAIL_SWITCH: u32 = 1;
-const TAIL_ROUTER: u32 = 2;
 
 const ETH_HDR_LEN: usize = 14;
 const IPV4_HDR_LEN: usize = 20;
@@ -44,10 +35,8 @@ const IP_DST_OFF: usize = ETH_HDR_LEN + 16;
 const IP_FRAG_OFF: usize = ETH_HDR_LEN + 6;
 const ICMP_TYPE_OFF: usize = ETH_HDR_LEN + IPV4_HDR_LEN;
 const ICMP_CSUM_OFF: usize = ETH_HDR_LEN + IPV4_HDR_LEN + 2;
-const ICMP_ID_OFF: usize = ETH_HDR_LEN + IPV4_HDR_LEN + 4;
 const ETHERTYPE_IPV4: u16 = 0x0800;
 const ETHERTYPE_ARP: u16 = 0x0806;
-const IP_PROTO_ICMP: u8 = 1;
 const ICMP_ECHO_REQUEST: u8 = 8;
 const ICMP_ECHO_REPLY: u8 = 0;
 const ARP_REQUEST: u16 = 1;
@@ -173,28 +162,13 @@ fn handle_arp(ctx: &mut TcContext) -> Result<i32, i64> {
     if oper != ARP_REQUEST {
         return Ok(TC_ACT_PIPE);
     }
-    let target_mac = if let Some(gw) = unsafe { INTERFACES.get(&ifindex) } {
-        if target_ip == gw.ip {
-            gw.mac
-        } else {
-            let key = ArpKey {
-                bridge_id,
-                ip: target_ip,
-            };
-            match unsafe { ARP_TABLE.get(&key) } {
-                Some(mac) => *mac,
-                None => return Ok(TC_ACT_PIPE),
-            }
-        }
-    } else {
-        let key = ArpKey {
-            bridge_id,
-            ip: target_ip,
-        };
-        match unsafe { ARP_TABLE.get(&key) } {
-            Some(mac) => *mac,
-            None => return Ok(TC_ACT_PIPE),
-        }
+    let key = ArpKey {
+        bridge_id,
+        ip: target_ip,
+    };
+    let target_mac = match unsafe { ARP_TABLE.get(&key) } {
+        Some(mac) => *mac,
+        None => return Ok(TC_ACT_PIPE),
     };
 
     let sender_mac = match ctx.load::<[u8; 6]>(ETH_HDR_LEN + 8) {
@@ -250,7 +224,12 @@ fn handle_icmp(ctx: &mut TcContext, gw: &Interface) -> Result<i32, i64> {
     ipv4_csum_replace_addr(ctx, ip_src, ip_dst);
     let _ = ctx.store(IP_DST_OFF, &ip_src.to_be_bytes(), 0);
     ipv4_csum_replace_addr(ctx, ip_dst, ip_src);
-    let _ = ctx.l4_csum_replace(ICMP_CSUM_OFF, u64::from(ICMP_ECHO_REQUEST), u64::from(ICMP_ECHO_REPLY), 2);
+    let _ = ctx.l4_csum_replace(
+        ICMP_CSUM_OFF,
+        u64::from(ICMP_ECHO_REQUEST),
+        u64::from(ICMP_ECHO_REPLY),
+        2,
+    );
     let icmp_reply: u8 = ICMP_ECHO_REPLY;
     let _ = ctx.store(ICMP_TYPE_OFF, &icmp_reply, 0);
     let ret = unsafe { bpf_redirect(ifindex, 0) };
@@ -287,20 +266,14 @@ fn forward(ctx: &mut TcContext) -> Result<i32, i64> {
         Ok(v) => v,
         Err(_) => return Ok(TC_ACT_PIPE),
     };
-    let in_ifindex = get_ifindex(ctx);
-    let route = match unsafe { DEFAULT_ROUTES.get(&in_ifindex) } {
+    let key = Key::new(32, dst_ip.to_be_bytes());
+    let default_key = Key::new(0, [0u8; 4]);
+    let route = match ROUTE_TABLE.get(&key) {
         Some(r) => *r,
-        None => {
-            let key = Key::new(32, dst_ip.to_be_bytes());
-            let default_key = Key::new(0, [0u8; 4]);
-            match ROUTE_TABLE.get(&key) {
-                Some(r) => *r,
-                None => match ROUTE_TABLE.get(&default_key) {
-                    Some(r) => *r,
-                    None => return Ok(TC_ACT_PIPE),
-                },
-            }
-        }
+        None => match ROUTE_TABLE.get(&default_key) {
+            Some(r) => *r,
+            None => return Ok(TC_ACT_PIPE),
+        },
     };
 
     let original_src_ip = match ctx.load::<u32>(IP_SRC_OFF) {
@@ -318,7 +291,11 @@ fn forward(ctx: &mut TcContext) -> Result<i32, i64> {
     let _ = ctx.store(6, &route.src_mac, 0);
 
     let ret = unsafe { bpf_redirect(route.out_ifindex, 0) };
-    if ret >= 0 { Ok(ret as i32) } else { Ok(TC_ACT_PIPE) }
+    if ret >= 0 {
+        Ok(ret as i32)
+    } else {
+        Ok(TC_ACT_PIPE)
+    }
 }
 
 fn ipv4_prefix_match(ip: u32, network: u32, prefix_len: u32) -> bool {
@@ -333,40 +310,9 @@ fn ipv4_prefix_match(ip: u32, network: u32, prefix_len: u32) -> bool {
 }
 
 #[classifier]
-pub fn hull_ingress(ctx: TcContext) -> i32 {
-    let ethertype = match ctx.load::<u16>(12) {
-        Ok(v) => u16::from_be(v),
-        Err(_) => return TC_ACT_PIPE,
-    };
-    if ethertype == ETHERTYPE_ARP || ethertype == ETHERTYPE_IPV4 {
-        unsafe {
-            let _ = JUMP_TABLE.tail_call(&ctx, TAIL_ROUTER);
-        }
-        unsafe {
-            let _ = JUMP_TABLE.tail_call(&ctx, TAIL_SWITCH);
-        }
-        return TC_ACT_PIPE;
-    }
-    unsafe {
-        let _ = JUMP_TABLE.tail_call(&ctx, TAIL_SWITCH);
-    }
-    TC_ACT_PIPE
-}
-
-#[classifier]
-pub fn hull_switch(ctx: TcContext) -> i32 {
-    switch_frame(&ctx).unwrap_or(TC_ACT_PIPE)
-}
-
-#[classifier]
-pub fn hull_router(mut ctx: TcContext) -> i32 {
+pub fn hull_ingress(mut ctx: TcContext) -> i32 {
     match route_frame(&mut ctx) {
-        Ok(NEXT_SWITCH) | Ok(TC_ACT_PIPE) => {
-            unsafe {
-                let _ = JUMP_TABLE.tail_call(&ctx, TAIL_SWITCH);
-            }
-            switch_frame(&ctx).unwrap_or(TC_ACT_PIPE)
-        }
+        Ok(NEXT_SWITCH) | Ok(TC_ACT_PIPE) => switch_frame(&ctx).unwrap_or(TC_ACT_PIPE),
         Ok(action) => action,
         Err(_) => TC_ACT_PIPE,
     }
